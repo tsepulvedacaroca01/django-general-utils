@@ -1,0 +1,9 @@
+version: '3.9'
+services:
+    app-django-django-general-utils-dev:
+        build:
+            context: .
+            dockerfile: ./docker/dev/Dockerfile
+        command: bash -c "pytest -n 6"
+        volumes:
+            - ./django_general_utils/:/usr/src/app

@@ -1,0 +1,1 @@
+from .safedelete import SafeDeleteAdmin
