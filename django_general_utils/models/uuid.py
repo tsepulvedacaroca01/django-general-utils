@@ -5,6 +5,7 @@ from django.db import models
 from django.db.models import Case, When, Value, BooleanField
 from django.db.models.functions import Now, Concat, Length, Cast, Repeat
 from django.utils.translation import gettext_lazy as _
+from django_middleware_global_request import get_request
 from model_utils.fields import AutoCreatedField, AutoLastModifiedField
 from queryable_properties.properties import queryable_property
 
@@ -116,14 +117,12 @@ class UUIDModel(models.Model):
 
     def _set_created_by(self) -> None:
         """Set user from middleware."""
-        context = LocalContext()  # retain thread for backwards compatibility
+        request = get_request()
 
-        request = None
+        if request is None:
+            return None
 
-        try:
-            if context.request.user.is_authenticated:
-                request = context.request
-        except AttributeError:
+        if request.user.is_anonymous:
             return None
 
         self.created_by = request.user

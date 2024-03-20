@@ -160,7 +160,9 @@ class BaseModelQuerySet(SafeDeleteQueryset, OrderedModelQuerySet):
 
         return super().annotate(*args, **kwargs)
 
-    def bulk_create(self, objs, full_clean=True, *args, **kwargs):
+    def bulk_create(self, objs, *args, **kwargs):
+        full_clean = kwargs.pop('full_clean', True)
+
         if full_clean:
             errors = []
 
@@ -176,7 +178,9 @@ class BaseModelQuerySet(SafeDeleteQueryset, OrderedModelQuerySet):
 
         return super().bulk_create(objs, *args, **kwargs)
 
-    def bulk_update(self, objs, full_clean=True, *args, **kwargs):
+    def bulk_update(self, objs, *args, **kwargs):
+        full_clean = kwargs.pop('full_clean', True)
+
         if full_clean:
             errors = []
 
@@ -236,6 +240,7 @@ class BaseModelManager(
             values: list[dict],
             update_fields: list,
             unique_fields: list,
+            full_clean: bool = True
     ):
         assert len(update_fields) > 0, _('update_fields is required')
         assert len(unique_fields) > 0, _('unique_fields is required')
@@ -277,7 +282,7 @@ class BaseModelManager(
                     self.model(**_value)
                     for _value in to_create
                 ]
-                instance_created = self.bulk_create(models)
+                instance_created = self.bulk_create(models, full_clean=full_clean)
             except ListValidationError as e:
                 for _model, _error in zip(models, e.args[0]):
                     errors[str([getattr(_model, _unique) for _unique in unique_fields])] = _error
@@ -300,6 +305,7 @@ class BaseModelManager(
                     models,
                     fields=update_fields,
                     batch_size=100,
+                    full_clean=full_clean
                 )
             except ListValidationError as e:
                 for _model, _error in zip(models, e.args[0]):
@@ -344,7 +350,10 @@ class BaseModel(SafeDeleteModel, OrderedModel, UUIDModel):
 
         return None
 
-    def save(self, keep_deleted=False, **kwargs):
+    def save(self, **kwargs):
+        keep_deleted = kwargs.pop('keep_deleted', False)
+        full_clean = kwargs.pop('full_clean', True)
+
         if not keep_deleted:
             if getattr(self, FIELD_NAME) and self.pk:
                 # if the object was undeleted, we need to reset the order
@@ -355,6 +364,7 @@ class BaseModel(SafeDeleteModel, OrderedModel, UUIDModel):
         for _field in self._images_field_to_blur:
             self.set_blur_image(_field)
 
-        self.full_clean()
+        if full_clean:
+            self.full_clean()
 
         super().save(keep_deleted, **kwargs)

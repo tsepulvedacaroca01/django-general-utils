@@ -10,7 +10,6 @@ from ..drf.validation_errors import ListValidationError
 # import traceback
 def exception_handler(exc, context) -> Response | None:
     """
-    For every time an error occurs, notify the botcenter
     @return: Response
     """
     response = rest_exception_handler(exc, context)
