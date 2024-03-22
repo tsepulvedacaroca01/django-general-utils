@@ -2,6 +2,7 @@ from urllib.parse import parse_qs
 
 from channels.auth import AuthMiddlewareStack
 from channels.db import database_sync_to_async
+from channels.middleware import BaseMiddleware
 from django.contrib.auth.models import AnonymousUser, User
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.settings import api_settings
@@ -43,9 +44,9 @@ def get_user_by_query_params(query_params) -> tuple:
     return AnonymousUser(), ''
 
 
-class QueryAuthMiddleware:
-    def __init__(self, app):
-        self.app = app
+class QueryAuthMiddleware(BaseMiddleware):
+    def __init__(self, inner):
+        super().__init__(inner)
 
     async def __call__(self, scope, receive, send):
         headers = dict(scope['headers'])
@@ -57,11 +58,11 @@ class QueryAuthMiddleware:
         scope['query_params'] = query_params
 
         if b'authorization' in headers:
-            scope['user'], scope['token'] = await get_user_by_header(headers)
+            scope['user'], scope['token'] = get_user_by_header(headers)
         elif query_params:
-            scope['user'], scope['token'] = await get_user_by_query_params(query_params)
+            scope['user'], scope['token'] = get_user_by_query_params(query_params)
 
-        return await self.app(scope, receive, send)
+        return await super().__call__(scope, receive, send)
 
 
 TokenAuthMiddlewareSocket = lambda inner: QueryAuthMiddleware(AuthMiddlewareStack(inner))
