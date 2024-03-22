@@ -1,6 +1,6 @@
 import uuid
 
-from django.contrib.auth import get_user_model
+from django.conf import settings
 from django.db import models
 from django.db.models import Case, When, Value, BooleanField
 from django.db.models.functions import Now, Concat, Length, Cast, Repeat
@@ -8,13 +8,6 @@ from django.utils.translation import gettext_lazy as _
 from django_middleware_global_request import get_request
 from model_utils.fields import AutoCreatedField, AutoLastModifiedField
 from queryable_properties.properties import queryable_property
-
-from .simple_history import HistoricalRecords
-
-try:
-    from asgiref.local import Local as LocalContext
-except ImportError:
-    from threading import local as LocalContext
 
 
 class UUIDModel(models.Model):
@@ -34,29 +27,29 @@ class UUIDModel(models.Model):
     is_active = models.BooleanField(default=True)
     created_at = AutoCreatedField(_('created_at'))
     created_by = models.ForeignKey(
-        get_user_model(),
+        settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
         editable=False,
-        related_name='%(class)s_created_by',
+        related_name='%(class)ss_created_by',
     )
     updated_at = AutoLastModifiedField(_('updated_at'))
     updated_by = models.ForeignKey(
-        get_user_model(),
+        settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
         editable=False,
-        related_name='%(class)s_updated_by',
+        related_name='%(class)ss_updated_by',
     )
     stopped_at = models.DateTimeField(
         null=True,
         blank=True
     )
-    history = HistoricalRecords(
-        inherit=True
-    )
+    # history = HistoricalRecords(
+    #     inherit=True
+    # )
 
     class Meta:
         abstract = True
@@ -115,8 +108,19 @@ class UUIDModel(models.Model):
     def _history_user(self, value):
         self.updated_by = value
 
-    def _set_created_by(self) -> None:
-        """Set user from middleware."""
+    def set_created_by(self, user = None) -> None:
+        """
+        Set created_by field.
+        @param user:
+        """
+        if self.created_by is not None:
+            return None
+
+        if user is not None:
+            self.created_by = user
+            return None
+
+        # """Set user from middleware."""
         request = get_request()
 
         if request is None:
@@ -134,6 +138,6 @@ class UUIDModel(models.Model):
         Save instance and set created_by.
         """
         if self._state.adding:
-            self._set_created_by()
+            self.set_created_by()
 
         super().save(*args, **kwargs)
