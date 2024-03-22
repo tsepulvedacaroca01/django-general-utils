@@ -2,8 +2,8 @@ import inspect
 import json
 import os
 
-from django.contrib.postgres.fields import JSONField
 from django.core import exceptions
+from django.db.models import JSONField
 from jsonschema import (
     validate,
     exceptions as jsonschema_exceptions

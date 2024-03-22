@@ -6,6 +6,7 @@ from rest_framework.response import Response
 
 class Pagination(pagination.PageNumberPagination):
     page_size_query_param = 'page_size'
+    enable_infinite_page_size = False
     max_page_size = 250
 
     def get_paginated_response(self, data):
@@ -14,7 +15,7 @@ class Pagination(pagination.PageNumberPagination):
                 'next': self.get_next_link(),
                 'previous': self.get_previous_link(),
             },
-            'page_size': self.get_page_size(self.request),
+            'page_size': self.page.paginator.per_page,
             'num_pages': self.page.paginator.num_pages,
             'page': self.page.number,
             'count': self.page.paginator.count,
@@ -62,6 +63,20 @@ class Pagination(pagination.PageNumberPagination):
             },
         }
 
+    def get_page_size_with_infinite(self, request, queryset, view):
+        if view is not None and hasattr(view, 'enable_infinite_page_size'):
+            self.enable_infinite_page_size = view.enable_infinite_page_size
+
+        page_size = 0
+
+        if self.enable_infinite_page_size and request.query_params.get(self.page_size_query_param) == '-1':
+            page_size = queryset.count()
+
+        if page_size == 0:
+            page_size = self.get_page_size(request)
+
+        return page_size
+
     def paginate_queryset(self, queryset, request, view=None):
         """
         Paginate a queryset if required, either returning a
@@ -70,7 +85,10 @@ class Pagination(pagination.PageNumberPagination):
         if view is not None and hasattr(view, 'max_page_size'):
             self.max_page_size = view.max_page_size
 
-        page_size = self.get_page_size(request)
+        if view is not None and hasattr(view, 'enable_infinite_page_size'):
+            self.enable_infinite_page_size = view.enable_infinite_page_size
+
+        page_size = self.get_page_size_with_infinite(request, queryset, view)
 
         if not page_size:
             return None

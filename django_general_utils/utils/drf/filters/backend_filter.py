@@ -45,7 +45,7 @@ class BackendFilter(filters.BaseFilterBackend):
         dynamic_filter = {}
 
         for _key, _value in search_terms.items():
-            if _value == '' or _key not in search_fields:
+            if _key not in search_fields:
                 continue
 
             dynamic_filter[_key] = str_to_boolean(_value, True)
@@ -56,7 +56,7 @@ class BackendFilter(filters.BaseFilterBackend):
         dynamic_filter = {}
 
         for _key, _value in search_terms.items():
-            if _value == '' or _key not in exclude_fields or '!' not in _key:
+            if _key not in exclude_fields or '!' not in _key:
                 continue
 
             dynamic_filter[_key.replace('!', '')] = str_to_boolean(_value, True)

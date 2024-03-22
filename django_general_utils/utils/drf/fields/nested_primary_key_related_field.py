@@ -1,13 +1,42 @@
 from collections import OrderedDict
 from typing import Type
 
+from django.core.exceptions import ObjectDoesNotExist
 from django_restql.parser import QueryParser
 from rest_framework import serializers
 
 from ....utils.rest_ql import DynamicFieldsMixin
 
 
-class NestedPrimaryKeyRelatedField(DynamicFieldsMixin, serializers.PrimaryKeyRelatedField):
+class PrimaryKeyRelatedField(serializers.PrimaryKeyRelatedField):
+    def __init__(self, **kwargs):
+        self.only_pk = kwargs.pop('only_pk', False)
+        super().__init__(**kwargs)
+
+    def to_internal_value(self, data):
+        if self.pk_field is not None:
+            data = self.pk_field.to_internal_value(data)
+
+        queryset = self.get_queryset()
+
+        try:
+            if isinstance(data, bool):
+                raise TypeError
+
+            if self.only_pk:
+                if not queryset.filter(pk=data).exists():
+                    self.fail('does_not_exist', pk_value=data)
+
+                return data
+
+            return queryset.get(pk=data)
+        except ObjectDoesNotExist:
+            self.fail('does_not_exist', pk_value=data)
+        except (TypeError, ValueError):
+            self.fail('incorrect_type', data_type=type(data).__name__)
+
+
+class NestedPrimaryKeyRelatedField(DynamicFieldsMixin, PrimaryKeyRelatedField):
     def __init__(self, **kwargs):
         """
         On read display a complete nested representation of the object(s)
@@ -54,19 +83,7 @@ class NestedPrimaryKeyRelatedField(DynamicFieldsMixin, serializers.PrimaryKeyRel
                 'parsed_query': parsed_query
             }))
 
-    def to_internal_value(self, data: int):
-        """
-        Check if return id or instance
-        @returns: int or instance
-        """
-        instance = super(NestedPrimaryKeyRelatedField, self).to_internal_value(data)
-
-        if self.only_internal_id:
-            return instance.id
-
-        return instance
-
-    def use_pk_only_optimization(self) -> bool:
+    def use_pk_only_optimization(self):
         return False
 
     def to_representation(self, instance) -> dict:

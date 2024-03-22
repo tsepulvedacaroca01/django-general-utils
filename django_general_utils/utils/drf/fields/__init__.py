@@ -1,2 +1,2 @@
 from .multiple_choice_field import MultipleChoiceField
-from .nested_primary_key_related_field import NestedPrimaryKeyRelatedField
+from .nested_primary_key_related_field import NestedPrimaryKeyRelatedField, PrimaryKeyRelatedField

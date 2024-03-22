@@ -46,7 +46,7 @@ class OrFilter(filters.BaseFilterBackend):
         q = Q()
 
         for _key, _value in search_terms.items():
-            if _value == '' or _key not in search_fields:
+            if _key not in search_fields:
                 continue
 
             q |= Q(**{_key: str_to_boolean(_value, True)})

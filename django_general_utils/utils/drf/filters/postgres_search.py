@@ -18,6 +18,7 @@ class PostgresSearchFilter(filters.BaseFilterBackend):
     search_word_trigram_attribute = 'search_word_trigram_fields'
     search_vector_attribute = 'search_vector_fields'
     search_icontains_attribute = 'search_icontains_fields'
+    search_bonus_rank_startswith = 'search_fields_bonus_rank_startswith'
     search_rank_weights_attribute = 'search_rank_weights'
 
     def filter_queryset(self, request, queryset, view):
@@ -26,6 +27,7 @@ class PostgresSearchFilter(filters.BaseFilterBackend):
         search_word_trigram_fields = self.get_search_word_trigram_fields(view)
         search_vector_fields = self.get_search_vector_fields(view)
         search_icontains_fields = self.get_search_icontains_fields(view)
+        search_fields_bonus_rank_startswith = self.get_search_fields_bonus_rank_startswith(view)
 
         if search_terms is None or search_terms == '':
             return queryset
@@ -44,6 +46,7 @@ class PostgresSearchFilter(filters.BaseFilterBackend):
             search_icontains_fields,
             search_terms,
             search_rank_weights,
+            search_fields_bonus_rank_startswith=search_fields_bonus_rank_startswith
         )
 
     def get_search_param(self, view) -> str:
@@ -68,6 +71,9 @@ class PostgresSearchFilter(filters.BaseFilterBackend):
 
     def get_search_icontains_fields(self, view) -> list:
         return getattr(view, self.search_icontains_attribute, [])
+
+    def get_search_fields_bonus_rank_startswith(self, view) -> list:
+        return getattr(view, self.search_bonus_rank_startswith, [])
 
     def get_vector_language(self, view) -> list:
         return getattr(view, self.vector_language_attribute, 'spanish')
