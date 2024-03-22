@@ -39,7 +39,7 @@ class UUIDModel(models.Model):
         null=True,
         blank=True,
         editable=False,
-        related_name='%(class)s_created_by',
+        related_name='%(class)ss_created_by',
     )
     updated_at = AutoLastModifiedField(_('updated_at'))
     updated_by = models.ForeignKey(
@@ -48,7 +48,7 @@ class UUIDModel(models.Model):
         null=True,
         blank=True,
         editable=False,
-        related_name='%(class)s_updated_by',
+        related_name='%(class)ss_updated_by',
     )
     stopped_at = models.DateTimeField(
         null=True,
@@ -115,8 +115,19 @@ class UUIDModel(models.Model):
     def _history_user(self, value):
         self.updated_by = value
 
-    def _set_created_by(self) -> None:
-        """Set user from middleware."""
+    def set_created_by(self, user = None) -> None:
+        """
+        Set created_by field.
+        @param user:
+        """
+        if self.created_by is not None:
+            return None
+
+        if user is not None:
+            self.created_by = user
+            return None
+
+        # """Set user from middleware."""
         request = get_request()
 
         if request is None:
@@ -134,6 +145,6 @@ class UUIDModel(models.Model):
         Save instance and set created_by.
         """
         if self._state.adding:
-            self._set_created_by()
+            self.set_created_by()
 
         super().save(*args, **kwargs)
