@@ -1,6 +1,6 @@
 from functools import partialmethod
 from typing import get_type_hints
-
+from django.db.models.signals import m2m_changed
 from django.db import models
 from django.db.models import Case, When, Value, BooleanField, TextField
 from django.db.models.base import ModelBase
@@ -35,6 +35,8 @@ def register_model_signals(app_name: str):
             for _signal in _model._signals:
                 _signal.set_model(_model)
                 _signal.register()
+        else:
+            assert issubclass(_model, models.Model), _('Model "%s" is not a subclass of BaseModel') % _model.__name__
 
     return None
 
@@ -44,12 +46,23 @@ class SignalRegister:
     signal = None
     model = None
 
-    def __init__(self, callback, signal, **kwargs):
+    def __init__(self, callback, signal, through_field=None, **kwargs):
         self.callback = callback
         self.signal = signal
+        self.through_field = through_field
         self.kwargs = kwargs
 
+        if signal is m2m_changed:
+            assert through_field is not None, _('through_field is required for m2m_changed signal')
+
     def set_model(self, model):
+        if self.signal is m2m_changed:
+            assert hasattr(model, self.through_field), _('Model "%s" does not have the field "%s"') % (model.__name__, self.through_field)
+
+            self.model = getattr(model, self.through_field).through
+
+            return
+
         self.model = model
 
     def register(self):
@@ -260,7 +273,7 @@ class BaseModel(SafeDeleteModel, OrderedModel, UUIDModel, metaclass=ModelBaseMet
 
     class Meta:
         abstract = True
-        ordering = ('-id',)
+        ordering = ('-pk',)
 
     @classmethod
     def get_queryable_property_params(cls, key: str, default=None):
