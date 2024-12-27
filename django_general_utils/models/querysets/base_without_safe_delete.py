@@ -1,5 +1,3 @@
-from asgiref.sync import sync_to_async
-from django.core.cache import cache
 from django.core.exceptions import FieldDoesNotExist
 from django.core.exceptions import ValidationError
 from django.db.models import Q
@@ -11,7 +9,7 @@ from safedelete.queryset import SafeDeleteQueryset
 from ...utils.drf.validation_errors import ListValidationError
 
 
-class BaseModelQuerySet(SafeDeleteQueryset, OrderedModelQuerySet):
+class BaseModelWithoutSafeDeleteQuerySet(SafeDeleteQueryset, OrderedModelQuerySet):
     @staticmethod
     def _is_valid_lookup(model, field_name: str):
         """
@@ -66,7 +64,7 @@ class BaseModelQuerySet(SafeDeleteQueryset, OrderedModelQuerySet):
                 split_fields.append(_sum_field)
 
         for _field in split_fields:
-            if not BaseModelQuerySet._is_valid_lookup(model, _field):
+            if not BaseModelWithoutSafeDeleteQuerySet._is_valid_lookup(model, _field):
                 continue
 
             lookup_fields[f'{_field}__{FIELD_NAME}__isnull'] = True
@@ -85,12 +83,12 @@ class BaseModelQuerySet(SafeDeleteQueryset, OrderedModelQuerySet):
 
         for _expression in field.get_source_expressions():
             # If the expression is a Q | Coalesce | When | etc, object, we need to iterate over its children
-            BaseModelQuerySet.set_filter_from_source_expressions(model, _expression)
+            BaseModelWithoutSafeDeleteQuerySet.set_filter_from_source_expressions(model, _expression)
 
             if not hasattr(_expression, 'name') or not hasattr(field, 'filter'):
                 continue
 
-            for _filter in BaseModelQuerySet.get_lookup_fields(model, [_expression.name]).keys():
+            for _filter in BaseModelWithoutSafeDeleteQuerySet.get_lookup_fields(model, [_expression.name]).keys():
                 extra_filter = Q(**{_filter: True})
 
                 if not field.filter:
@@ -105,14 +103,6 @@ class BaseModelQuerySet(SafeDeleteQueryset, OrderedModelQuerySet):
     def active(self):
         """ Return only active records"""
         return self.filter(is_active=True)
-
-    def filter_queryable_property(self, **kwargs):
-        """
-        Set the filter to be used when querying queryable properties.
-        """
-        self.model._queryable_property_params = self.model._queryable_property_params | kwargs
-
-        return self
 
     def bulk_create(self, objs, *args, **kwargs):
         full_clean = kwargs.pop('full_clean', True)

@@ -1,84 +1,26 @@
 from functools import partialmethod
 from typing import get_type_hints
-from django.db.models.signals import m2m_changed
+
 from django.db import models
-from django.db.models import Case, When, Value, BooleanField, TextField
+from django.db.models import TextField
 from django.db.models.base import ModelBase
-from django.db.models.functions import Now
 from django.utils.functional import cached_property
-from django.utils.translation import gettext_lazy as _
 from model_utils import FieldTracker
 from ordered_model.models import OrderedModel
-from queryable_properties.properties import queryable_property
-from safedelete import SOFT_DELETE_CASCADE
-from safedelete.config import FIELD_NAME
-from safedelete.models import SafeDeleteModel
 
-from .managers.base import BaseModelManager
-from .querysets.base import BaseModelQuerySet
-from .simple_history import HistoricalRecords
+from .managers.base_without_safe_delete import BaseWithoutSafeDeleteModelManager
+from .querysets.base_without_safe_delete import BaseModelWithoutSafeDeleteQuerySet
 from .uuid import UUIDModel
-from ..models import fields
-from ..models.constraints import UniqueConstraint
 from ..utils.formats import format_currency, format_decimal
 from ..utils.image.blur_img_to_base64 import blur_img_to_base64, DEFAULT_BLUR_CODE
 
 
-def register_model_signals(app_name: str):
-    from django.apps import apps
-
-    app_config = apps.get_app_config(app_name)
-
-    for _model in app_config.get_models():
-        if issubclass(_model, BaseModel):
-            for _signal in _model._signals:
-                _signal.set_model(_model)
-                _signal.register()
-        else:
-            assert issubclass(_model, models.Model), _('Model "%s" is not a subclass of BaseModel') % _model.__name__
-
-    return None
-
-
-class SignalRegister:
-    callback = None
-    signal = None
-    model = None
-
-    def __init__(self, callback, signal, through_field=None, **kwargs):
-        self.callback = callback
-        self.signal = signal
-        self.through_field = through_field
-        self.kwargs = kwargs
-
-        if signal is m2m_changed:
-            assert through_field is not None, _('through_field is required for m2m_changed signal')
-
-    def set_model(self, model):
-        if self.signal is m2m_changed:
-            assert hasattr(model, self.through_field), _('Model "%s" does not have the field "%s"') % (model.__name__, self.through_field)
-
-            self.model = getattr(model, self.through_field).through
-
-            return
-
-        self.model = model
-
-    def register(self):
-        assert self.model is not None, _('Model is not set')
-
-        self.signal.connect(self.callback, sender=self.model, **self.kwargs)
-
-
-class ModelBaseMeta(ModelBase):
+class ModelBaseWithOutSafeDeleteMeta(ModelBase):
     def __new__(cls, name, bases, attrs):
         super_new = super().__new__
 
         if 'Meta' in attrs and getattr(attrs['Meta'], 'abstract', False):
             return super_new(cls, name, bases, attrs)
-
-        if 'history' not in attrs:
-            attrs['history'] = HistoricalRecords()
 
         if 'tracker' not in attrs:
             attrs['tracker'] = FieldTracker()
@@ -97,42 +39,12 @@ class ModelBaseMeta(ModelBase):
         if not hasattr(meta, 'constraints'):
             meta.constraints = []
 
-        cls._validate_related_fields(model_class, meta, attrs)
         cls._add_formated_number(model_class, attrs)
         cls._add_blur_fields(model_class)
 
         model_class.add_to_class('_signals', signals)
 
         return model_class
-
-    @staticmethod
-    def _validate_related_fields(model_class, meta, attrs) -> None:
-        """
-        VALIDA QUE LOS CAMPOS RELACIONADOS SEAN DE TIPO CORRECTO
-        """
-        for field_name, field in attrs.items():
-            if isinstance(field, models.OneToOneField):
-                if not isinstance(field, fields.OneToOneField):
-                    raise TypeError(
-                        _(f'Field "{field_name}" OneToOneField is not supported when inheriting from BaseModel. Use django_general_utils.models.fields.OneToOneField instead.')
-                    )
-                else:
-                    meta.constraints.append(
-                        UniqueConstraint(
-                            prefix=model_class.__name__.lower(),
-                            fields=[field_name],
-                            violation_error_message={
-                                field_name: _('Ya existe un registro con este valor.'),
-                            },
-                        )
-                    )
-
-            if isinstance(field, models.ForeignKey) and (not isinstance(field, (fields.ForeignKey, fields.OneToOneField))):
-                raise TypeError(
-                    _(f'Field "{field_name}" model.ForeignKey is not supported when inheriting from BaseModel. Use django_general_utils.models.fields.ForeignKey instead.')
-                )
-
-        return None
 
     @staticmethod
     def _add_blur_fields(model_class) -> None:
@@ -259,50 +171,15 @@ class ModelBaseMeta(ModelBase):
 
         return None
 
-class BaseModel(SafeDeleteModel, OrderedModel, UUIDModel, metaclass=ModelBaseMeta):
+class BaseWithoutSafeDeleteModel(OrderedModel, UUIDModel, metaclass=ModelBaseWithOutSafeDeleteMeta):
     __FORMAT_LOCALE__ = 'es_CL'
     _images_field_to_blur = []
-    _queryable_property_params = {}
     _suffix_blur_code = 'blur_code'
-    _safedelete_policy = SOFT_DELETE_CASCADE
-    objects = BaseModelManager(BaseModelQuerySet)
+    objects = BaseWithoutSafeDeleteModelManager()
 
     class Meta:
         abstract = True
         ordering = ('-pk',)
-
-    @classmethod
-    def get_queryable_property_params(cls, key: str, default=None):
-        """
-        Get the filter to be used when querying queryable properties.
-        """
-        default = default or {}
-        return cls._queryable_property_params.get(key, default)
-
-    @classmethod
-    def filter_queryable_property(cls, **kwargs):
-        """
-        Get the filter to be used when querying queryable properties.
-        """
-        cls._queryable_property_params = kwargs
-
-    @queryable_property(annotation_based=True)
-    @classmethod
-    def is_deleted(cls) -> bool:
-        # noinspection PyTypeChecker
-        return Case(
-            When(**{f'{FIELD_NAME}__lt': Now(), 'then': Value(True)}),
-            default=Value(False),
-            output_field=BooleanField()
-        )
-
-    @property
-    def _history_user(self):
-        return self.updated_by
-
-    @_history_user.setter
-    def _history_user(self, value):
-        self.updated_by = value
 
     def set_blur_image(self, field: str) -> None:
         """
@@ -317,15 +194,8 @@ class BaseModel(SafeDeleteModel, OrderedModel, UUIDModel, metaclass=ModelBaseMet
         return None
 
     def save(self, **kwargs):
-        keep_deleted = kwargs.pop('keep_deleted', False)
         full_clean = kwargs.pop('full_clean', True)
 
-        if not keep_deleted:
-            if getattr(self, FIELD_NAME) and self.pk:
-                # if the object was undeleted, we need to reset the order
-                self.order = self.get_ordering_queryset().get_next_order()
-
-            setattr(self, FIELD_NAME, None)
 
         for _field in self._images_field_to_blur:
             self.set_blur_image(_field)
@@ -333,4 +203,4 @@ class BaseModel(SafeDeleteModel, OrderedModel, UUIDModel, metaclass=ModelBaseMet
         if full_clean:
             self.full_clean()
 
-        super().save(keep_deleted, **kwargs)
+        super().save(**kwargs)
