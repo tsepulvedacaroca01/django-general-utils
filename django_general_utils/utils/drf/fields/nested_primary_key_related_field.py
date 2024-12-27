@@ -1,9 +1,9 @@
 from collections import OrderedDict
-from typing import Type
-
 from django.core.exceptions import ObjectDoesNotExist
+from django.utils.module_loading import import_string
 from django_restql.parser import QueryParser
 from rest_framework import serializers
+from typing import Type
 
 from ....utils.rest_ql import DynamicFieldsMixin
 
@@ -57,6 +57,9 @@ class NestedPrimaryKeyRelatedField(DynamicFieldsMixin, PrimaryKeyRelatedField):
                 "or override the `get_serializer()` method."
                 % self.__class__.__name__
         )
+
+        if isinstance(self.serializer_class, str):
+            self.serializer_class = import_string(self.serializer_class)
 
         return self.serializer_class
 
