@@ -1,3 +1,6 @@
+from typing import Tuple
+
+from django.db.models import F, Count, Q
 from nested_multipart_parser import NestedParser
 from rest_framework import filters
 
@@ -7,6 +10,7 @@ from ....utils import str_to_boolean
 class BackendFilter(filters.BaseFilterBackend):
     filter_fields_attribute = 'filter_fields'
     filter_exclude_fields_attribute = 'filter_exclude_fields'
+    all_children_suffix = '__all_children'
 
     def filter_queryset(self, request, queryset, view):
         filter_fields = self.get_filter_fields(view)
@@ -20,7 +24,7 @@ class BackendFilter(filters.BaseFilterBackend):
             return queryset
 
         queryset = queryset.filter(
-            **self.get_filter(filter_fields, search_terms)
+            **self.get_filter(filter_fields, search_terms),
         ).exclude(
             **self.get_exclude_fields(exclude_filter_fields, search_terms)
         )
@@ -28,10 +32,13 @@ class BackendFilter(filters.BaseFilterBackend):
         return queryset
 
     def get_filter_fields(self, view) -> list:
-        return getattr(view, self.filter_fields_attribute, [])
+        return list(filter(lambda x: not x.endswith(self.all_children_suffix), getattr(view, self.filter_fields_attribute, [])))
 
     def get_filter_exclude_fields(self, view) -> list:
-        return getattr(view, self.filter_exclude_fields_attribute, [])
+        return list(filter(lambda x: not x.endswith(self.all_children_suffix), getattr(view, self.filter_exclude_fields_attribute, [])))
+
+    def get_filter_exclude_all_children_fields(self, view) -> list:
+        return list(filter(lambda x: x.endswith(self.all_children_suffix), getattr(view, self.filter_exclude_fields_attribute, [])))
 
     def get_query_params(self, request) -> dict:
         parser = NestedParser(request.query_params, {'querydict': False})
@@ -51,6 +58,7 @@ class BackendFilter(filters.BaseFilterBackend):
             dynamic_filter[_key] = str_to_boolean(_value, True)
 
         return dynamic_filter
+
 
     def get_exclude_fields(self, exclude_fields: list, search_terms: dict) -> dict:
         dynamic_filter = {}

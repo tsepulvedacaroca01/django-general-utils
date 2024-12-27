@@ -15,11 +15,11 @@ class DynamicFieldsMixin(mixins.DynamicFieldsMixin):
 
     @staticmethod
     def is_nested_field(field_name, field, raise_exception=False):
-        from ..drf.fields import NestedPrimaryKeyRelatedField
+        from ..drf.fields import NestedPrimaryKeyRelatedField, LazyRefSerializerField
 
         nested_classes = (
             serializers.Serializer, serializers.ListSerializer,
-            DynamicSerializerMethodField, NestedPrimaryKeyRelatedField
+            DynamicSerializerMethodField, NestedPrimaryKeyRelatedField, LazyRefSerializerField
         )
 
         if isinstance(field, nested_classes):
