@@ -3,14 +3,15 @@ from django.core.exceptions import ObjectDoesNotExist
 from django.db.models import ManyToManyField, DateTimeField, CharField
 from django.urls import reverse
 from django.utils.translation import gettext_lazy as _
+
 from simple_history import models, utils
 
 
 class HistoricalRecords(models.HistoricalRecords):
     def fields_included(self, model):
         """
-        Return a list of fields to include in the historical record. By default,
-        all fields are included.
+        Retorna una lista de campos para incluir en el registro histórico. Por defecto,
+        se incluyen todos los campos.
         """
         fields = []
         field_from_blur_codes = []

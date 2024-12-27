@@ -55,7 +55,7 @@ class CheckModelRelationConstraint(BaseConstraint):
         if isinstance(check_result, (str, dict)):
             raise ValidationError(check_result)
 
-        if isinstance(check_result, bool) and check_result:
+        if check_result is None or (isinstance(check_result, bool) and check_result):
             raise ValidationError(self.get_violation_error_message())
 
         return None

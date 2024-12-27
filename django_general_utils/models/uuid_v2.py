@@ -3,6 +3,7 @@ import uuid
 from django.conf import settings
 from django.db import models
 from django.db.models import Case, When, Value, BooleanField
+from django.db.models import Max
 from django.db.models.functions import Now, Concat, Length, Cast, Repeat
 from django.utils.translation import gettext_lazy as _
 from django_middleware_global_request import get_request
@@ -10,7 +11,7 @@ from model_utils.fields import AutoCreatedField, AutoLastModifiedField
 from queryable_properties.properties import queryable_property
 
 
-class UUIDModel(models.Model):
+class UUIDModelV2(models.Model):
     """
     An abstract base class model that provides self-updating
     ``id``,  ``created_at`` and ``updated_at`` fields.
@@ -22,7 +23,14 @@ class UUIDModel(models.Model):
     uuid = models.UUIDField(
         default=uuid.uuid4,
         editable=False,
-        unique=True
+        unique=True,
+        primary_key=True,
+    )
+    id = models.PositiveBigIntegerField(
+        editable=False,
+        null=True,
+        blank=True,
+        unique=True,
     )
     is_active = models.BooleanField(default=True)
     created_at = AutoCreatedField(_('created_at'))
@@ -50,7 +58,7 @@ class UUIDModel(models.Model):
 
     class Meta:
         abstract = True
-        ordering = ('-pk',)
+        ordering = ('-id',)
 
     @queryable_property(annotation_based=True)
     @classmethod
@@ -73,9 +81,9 @@ class UUIDModel(models.Model):
             Value(cls._ID_AS_CODE_PREFIX_),
             Repeat(
                 Value('0'),
-                cls._ID_AS_CODE_LENGTH_ - Length(Cast('pk', output_field=models.CharField()))
+                cls._ID_AS_CODE_LENGTH_ - Length(Cast('id', output_field=models.CharField()))
             ),
-            Cast('pk', output_field=models.CharField()),
+            Cast('id', output_field=models.CharField()),
             Value(cls._ID_AS_CODE_SUFFIX_)
         )
 
@@ -85,10 +93,8 @@ class UUIDModel(models.Model):
         @summary: Get next code
         @return: str
         """
-        # TODO: TEST: REVISAR ESTO CUANDO LA PK NO ES DE TIPO INT
-
         last_code = cls.objects.all_with_deleted().order_by(
-            '-pk'
+            '-id'
         ).first()
 
         if last_code is None:
@@ -97,6 +103,12 @@ class UUIDModel(models.Model):
             next_code = '0' * (cls._ID_AS_CODE_LENGTH_ - len(str(last_code.pk + 1))) + str(last_code.pk + 1)
 
         return f'{cls._ID_AS_CODE_PREFIX_}{next_code}{cls._ID_AS_CODE_SUFFIX_}'
+
+    @classmethod
+    def max_id(cls) -> int:
+        """
+        """
+        return cls.objects.all().aggregate(id__max=Max('id')).get('id__max', 0) or 0
 
     def set_created_by(self, user = None) -> None:
         """
@@ -153,5 +165,8 @@ class UUIDModel(models.Model):
             self.set_created_by()
 
         self.set_updated_by()
+
+        if self.id is None:
+            self.id = self.max_id() + 1
 
         super().save(*args, **kwargs)
