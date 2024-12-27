@@ -24,7 +24,7 @@ class AjaxDatatableView(AjaxDatatableViewBase):
 
     vector_language = 'spanish'
     search_fields_filter = 'gte'
-    search_fields_average = 0.25
+    search_fields_average = 0.4
     search_rank_weights = [0.2, 0.4, 0.6, 1]
 
     def filter_queryset_all_columns(self, search_value, queryset):
