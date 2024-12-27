@@ -197,6 +197,4 @@ class BaseModelManager(
                 }
             ).delete()
 
-        self.model._delete_cache()
-
         return instance_created, models_to_update
