@@ -1,3 +1,4 @@
 from .dynamic_response_extension import DynamicFieldsModelSerializerExtension
+from .lazy_ref_extension import LazyRefSerializerFieldExtension
 from .nested_pk_extension import NestedPkExtension
 from .time_zone import TimeZoneSerializerFieldExtension
