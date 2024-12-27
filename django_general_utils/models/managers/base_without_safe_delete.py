@@ -1,58 +1,18 @@
 from django.core.exceptions import ValidationError
-from django.db.models import ForeignKey, Manager
+from django.db.models import Manager
 from django.utils.translation import gettext_lazy as _
 from ordered_model.models import OrderedModelManager
 from queryable_properties import managers
-from safedelete.config import FIELD_NAME
-from safedelete.managers import SafeDeleteManager
 
-from ..querysets.base import BaseModelQuerySet
+from ..querysets.base_without_safe_delete import BaseModelWithoutSafeDeleteQuerySet
 from ...utils.drf.validation_errors import ListValidationError
 
 
-class BaseModelManager(
-    Manager.from_queryset(BaseModelQuerySet),
+class BaseWithoutSafeDeleteModelManager(
+    Manager.from_queryset(BaseModelWithoutSafeDeleteQuerySet),
     managers.QueryablePropertiesManagerMixin,
-    SafeDeleteManager,
     OrderedModelManager
 ):
-    def select_properties(self, *names, **kwargs):
-        """
-        Return a new queryset and add the annotations of the queryable
-        properties with the specified names to this query. The annotation
-        values will be cached in the properties of resulting model instances,
-        regardless of the regular caching behavior of the queried properties.
-
-        :param names: Names of queryable properties.
-        :return: A copy of this queryset with the added annotations.
-        :rtype: QuerySet
-        """
-        self.filter_queryable_property(**kwargs.get('property_params', {}))
-        return self.get_queryset().select_properties(*names)
-
-    def get_queryset(self):
-        from ..base import BaseModel
-
-        through = getattr(self, 'through', None)
-
-        # through m2m attribute
-        if through and issubclass(through, BaseModel):
-            for field in through._meta.get_fields():
-                # Check if the field is a `ForeignKey` to the current model
-                if (
-                        isinstance(field, ForeignKey)
-                        and field.related_model == self.model
-                ):
-                    # Filter out objects based on deleted through objects using related name or model name
-                    through_lookup = (
-                            field.remote_field.related_name or through._meta.model_name
-                    )
-                    self.core_filters.update(
-                        {f"{through_lookup}__{FIELD_NAME}__isnull": True}
-                    )
-
-        return super().get_queryset()
-
     def bulk_create_or_update_dict(
             self,
             values: list[dict],
