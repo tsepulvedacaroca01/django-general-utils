@@ -68,7 +68,7 @@ class UUIDModel(models.Model):
             output_field=BooleanField()
         )
 
-    @queryable_property(annotation_based=True)
+    @queryable_property(annotation_based=True, cached=True)
     @classmethod
     def id_as_code(cls) -> str:
         # noinspection PyTypeChecker
