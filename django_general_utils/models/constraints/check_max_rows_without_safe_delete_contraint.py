@@ -7,18 +7,16 @@ from safedelete.config import FIELD_NAME
 from django_general_utils.models.constraints import BaseConstraint
 
 
-class CheckRowsModelConstraint(BaseConstraint):
+class CheckRowsModelWithoutSafeDeleteConstraint(BaseConstraint):
     def __init__(
             self,
             max_rows: int,
             name,
             check=None,
-            include_deleted=False,
             violation_error_message=None
     ):
         self.max_rows = max_rows
         self.check = check
-        self.include_deleted = include_deleted
 
         if check is not None and not getattr(check, "conditional", False):
             raise TypeError(
@@ -65,10 +63,6 @@ class CheckRowsModelConstraint(BaseConstraint):
         if self.check is not None:
             queryset = queryset.filter(self.check)
 
-        # Check if the model includes deleted rows
-        if not self.include_deleted:
-            queryset = queryset.filter(**{f'{FIELD_NAME}__isnull': True})
-
         # Check if the model is being updated
         if not instance._state.adding and model_class_pk is not None:
             queryset = queryset.exclude(pk=model_class_pk)
@@ -77,12 +71,11 @@ class CheckRowsModelConstraint(BaseConstraint):
             raise ValidationError(self.get_violation_error_message())
 
     def __eq__(self, other):
-        if isinstance(other, CheckRowsModelConstraint):
+        if isinstance(other, CheckRowsModelWithoutSafeDeleteConstraint):
             return (
                     self.max_rows == other.max_rows
                     and self.name == other.name
                     and self.check == other.check
-                    and self.include_deleted == other.include_deleted
                     and self.violation_error_message == other.violation_error_message
             )
         return super().__eq__(other)
@@ -92,7 +85,6 @@ class CheckRowsModelConstraint(BaseConstraint):
         kwargs.update({
             'max_rows': self.max_rows,
             'check': self.check,
-            'include_deleted': self.include_deleted,
         })
 
         return path, args, kwargs

@@ -4,9 +4,9 @@ from rest_framework import serializers
 
 class MinMaxElementsValidator:
     code = 'min_max_element_list'
-    error_message = _('La lista debe tener entre {min} y {max} elementos.')
-    error_message_only_min = _('La lista debe tener al menos {min} elementos.')
-    error_message_only_max = _('La lista debe tener como máximo {max} elementos.')
+    error_message = _('La lista debe tener entre {min} y {max} elemento(s).')
+    error_message_only_min = _('La lista debe tener al menos {min} elemento(s).')
+    error_message_only_max = _('La lista debe tener como máximo {max} elemento(s).')
     requires_context = True
 
     def __init__(self, min: int = None, max: int = None, keys: list = None, required: bool = True):
@@ -30,18 +30,20 @@ class MinMaxElementsValidator:
         }
 
         for _key in self.keys:
-            if not is_partial and serializer.fields[_key].required:
-                assert not _key not in value, _('el campo %s no existe en el body.' % _key)
+            _key_from_source = getattr(serializer.fields[_key], 'source', _key)
 
-            if not _key in value:
+            if not is_partial and serializer.fields[_key].required:
+                assert not _key_from_source not in value, _('el campo %s no existe en el body.' % _key)
+
+            if not _key_from_source in value:
                 continue
 
-            if self.min is not None and self.min > len(value[_key]):
+            if self.min is not None and self.min > len(value[_key_from_source]):
                 errors[_key].append(
                     self.error_message_only_min.format(min=self.min)
                 )
 
-            if self.max is not None and self.max < len(value[_key]):
+            if self.max is not None and self.max < len(value[_key_from_source]):
                 errors[_key].append(
                     self.error_message_only_max.format(max=self.max),
                 )
