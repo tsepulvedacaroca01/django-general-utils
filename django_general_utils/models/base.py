@@ -1,6 +1,6 @@
 from functools import partialmethod
 from typing import get_type_hints
-
+from django.db.models.signals import m2m_changed
 from django.db import models
 from django.db.models import Case, When, Value, BooleanField, TextField
 from django.db.models.base import ModelBase
@@ -20,21 +20,23 @@ from .simple_history import HistoricalRecords
 from .uuid import UUIDModel
 from ..models import fields
 from ..models.constraints import UniqueConstraint
-from ..utils import delete_cache
 from ..utils.formats import format_currency, format_decimal
 from ..utils.image.blur_img_to_base64 import blur_img_to_base64, DEFAULT_BLUR_CODE
 
 
 def register_model_signals(app_name: str):
     from django.apps import apps
+    from .base_without_safe_delete import BaseWithoutSafeDeleteModel
 
     app_config = apps.get_app_config(app_name)
 
     for _model in app_config.get_models():
-        if issubclass(_model, BaseModel):
+        if issubclass(_model, (BaseModel, BaseWithoutSafeDeleteModel)):
             for _signal in _model._signals:
                 _signal.set_model(_model)
                 _signal.register()
+        else:
+            assert issubclass(_model, models.Model), _('Model "%s" is not a subclass of BaseModel or BaseWithoutSafeDeleteModel') % _model.__name__
 
     return None
 
@@ -44,12 +46,23 @@ class SignalRegister:
     signal = None
     model = None
 
-    def __init__(self, callback, signal, **kwargs):
+    def __init__(self, callback, signal, through_field=None, **kwargs):
         self.callback = callback
         self.signal = signal
+        self.through_field = through_field
         self.kwargs = kwargs
 
+        if signal is m2m_changed:
+            assert through_field is not None, _('through_field is required for m2m_changed signal')
+
     def set_model(self, model):
+        if self.signal is m2m_changed:
+            assert hasattr(model, self.through_field), _('Model "%s" does not have the field "%s"') % (model.__name__, self.through_field)
+
+            self.model = getattr(model, self.through_field).through
+
+            return
+
         self.model = model
 
     def register(self):
@@ -81,7 +94,6 @@ class ModelBaseMeta(ModelBase):
         model_class = super_new(cls, name, bases, attrs)
 
         meta = model_class._meta
-        key_cache = f'{model_class.__module__}.{model_class.__name__.lower()}'
 
         if not hasattr(meta, 'constraints'):
             meta.constraints = []
@@ -91,7 +103,6 @@ class ModelBaseMeta(ModelBase):
         cls._add_blur_fields(model_class)
 
         model_class.add_to_class('_signals', signals)
-        model_class.add_to_class('KEY_CACHE', key_cache)
 
         return model_class
 
@@ -251,7 +262,6 @@ class ModelBaseMeta(ModelBase):
 
 class BaseModel(SafeDeleteModel, OrderedModel, UUIDModel, metaclass=ModelBaseMeta):
     __FORMAT_LOCALE__ = 'es_CL'
-    KEY_CACHE = None
     _images_field_to_blur = []
     _queryable_property_params = {}
     _suffix_blur_code = 'blur_code'
@@ -260,7 +270,7 @@ class BaseModel(SafeDeleteModel, OrderedModel, UUIDModel, metaclass=ModelBaseMet
 
     class Meta:
         abstract = True
-        ordering = ('-id',)
+        ordering = ('-pk',)
 
     @classmethod
     def get_queryable_property_params(cls, key: str, default=None):
@@ -286,6 +296,14 @@ class BaseModel(SafeDeleteModel, OrderedModel, UUIDModel, metaclass=ModelBaseMet
             default=Value(False),
             output_field=BooleanField()
         )
+
+    @property
+    def _history_user(self):
+        return self.updated_by
+
+    @_history_user.setter
+    def _history_user(self, value):
+        self.updated_by = value
 
     def set_blur_image(self, field: str) -> None:
         """
@@ -315,8 +333,5 @@ class BaseModel(SafeDeleteModel, OrderedModel, UUIDModel, metaclass=ModelBaseMet
 
         if full_clean:
             self.full_clean()
-
-        if hasattr(self, 'KEY_CACHE'):
-            delete_cache(self.KEY_CACHE)
 
         super().save(keep_deleted, **kwargs)
