@@ -6,10 +6,12 @@ from rest_framework.response import Response
 
 class Pagination(pagination.PageNumberPagination):
     page_size_query_param = 'page_size'
+    object_query_param = 'object_query'
     enable_infinite_page_size = False
     max_page_size = 250
+    object_query = None
 
-    def get_paginated_response(self, data):
+    def get_paginated_response(self, data) -> Response:
         return Response({
             'links': {
                 'next': self.get_next_link(),
@@ -19,10 +21,11 @@ class Pagination(pagination.PageNumberPagination):
             'num_pages': self.page.paginator.num_pages,
             'page': self.page.number,
             'count': self.page.paginator.count,
+            'object_query': self.object_query,
             'results': data
         })
 
-    def get_paginated_response_schema(self, schema):
+    def get_paginated_response_schema(self, schema) -> dict:
         return {
             'type': 'object',
             'properties': {
@@ -59,6 +62,11 @@ class Pagination(pagination.PageNumberPagination):
                     'type': 'integer',
                     'example': 123,
                 },
+                'object_query': {
+                    'type': 'object',
+                    'nullable': True,
+                    '$ref': schema.get('items', {}).get('$ref', None)
+                },
                 'results': schema,
             },
         }
@@ -77,6 +85,26 @@ class Pagination(pagination.PageNumberPagination):
 
         return page_size
 
+    def set_object_query_param(self, request, queryset, view) -> None:
+        if view is None or not hasattr(view, 'get_serializer'):
+            return None
+
+        if view is None or not hasattr(view, 'lookup_field'):
+            return None
+
+        if self.object_query_param not in request.query_params:
+            return None
+
+        filter_kwargs = {view.lookup_field: request.query_params.get(self.object_query_param, None)}
+        instance = queryset.filter(**filter_kwargs).first()
+
+        if instance is None:
+            return None
+
+        self.object_query = view.get_serializer(instance).data
+
+        return None
+
     def paginate_queryset(self, queryset, request, view=None):
         """
         Paginate a queryset if required, either returning a
@@ -87,6 +115,8 @@ class Pagination(pagination.PageNumberPagination):
 
         if view is not None and hasattr(view, 'enable_infinite_page_size'):
             self.enable_infinite_page_size = view.enable_infinite_page_size
+
+        self.set_object_query_param(request, queryset, view)
 
         page_size = self.get_page_size_with_infinite(request, queryset, view)
 
