@@ -260,7 +260,7 @@ class BaseModel(SafeDeleteModel, OrderedModel, UUIDModel, metaclass=ModelBaseMet
 
     class Meta:
         abstract = True
-        ordering = ('-id',)
+        ordering = ('-pk',)
 
     @classmethod
     def get_queryable_property_params(cls, key: str, default=None):
