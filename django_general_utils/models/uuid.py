@@ -47,13 +47,10 @@ class UUIDModel(models.Model):
         null=True,
         blank=True
     )
-    # history = HistoricalRecords(
-    #     inherit=True
-    # )
 
     class Meta:
         abstract = True
-        ordering = ('-id',)
+        ordering = ('-pk',)
 
     @queryable_property(annotation_based=True)
     @classmethod
@@ -68,7 +65,7 @@ class UUIDModel(models.Model):
             output_field=BooleanField()
         )
 
-    @queryable_property(annotation_based=True)
+    @queryable_property(annotation_based=True, cached=True)
     @classmethod
     def id_as_code(cls) -> str:
         # noinspection PyTypeChecker
@@ -76,9 +73,9 @@ class UUIDModel(models.Model):
             Value(cls._ID_AS_CODE_PREFIX_),
             Repeat(
                 Value('0'),
-                cls._ID_AS_CODE_LENGTH_ - Length(Cast('id', output_field=models.CharField()))
+                cls._ID_AS_CODE_LENGTH_ - Length(Cast('pk', output_field=models.CharField()))
             ),
-            Cast('id', output_field=models.CharField()),
+            Cast('pk', output_field=models.CharField()),
             Value(cls._ID_AS_CODE_SUFFIX_)
         )
 
@@ -88,25 +85,18 @@ class UUIDModel(models.Model):
         @summary: Get next code
         @return: str
         """
-        # TODO: TEST
+        # TODO: TEST: REVISAR ESTO CUANDO LA PK NO ES DE TIPO INT
+
         last_code = cls.objects.all_with_deleted().order_by(
-            '-id'
+            '-pk'
         ).first()
 
         if last_code is None:
             next_code = '0' * (cls._ID_AS_CODE_LENGTH_ - 1) + '1'
         else:
-            next_code = '0' * (cls._ID_AS_CODE_LENGTH_ - len(str(last_code.id + 1))) + str(last_code.id + 1)
+            next_code = '0' * (cls._ID_AS_CODE_LENGTH_ - len(str(last_code.pk + 1))) + str(last_code.pk + 1)
 
         return f'{cls._ID_AS_CODE_PREFIX_}{next_code}{cls._ID_AS_CODE_SUFFIX_}'
-
-    @property
-    def _history_user(self):
-        return self.updated_by
-
-    @_history_user.setter
-    def _history_user(self, value):
-        self.updated_by = value
 
     def set_created_by(self, user = None) -> None:
         """
@@ -133,11 +123,35 @@ class UUIDModel(models.Model):
 
         return None
 
+    def set_updated_by(self, user = None) -> None:
+        """
+        Set updated_by field.
+        @param user:
+        """
+        if user is not None:
+            self.updated_by = user
+            return None
+
+        # """Set user from middleware."""
+        request = get_request()
+
+        if request is None:
+            return None
+
+        if request.user.is_anonymous:
+            return None
+
+        self.updated_by = request.user
+
+        return None
+
     def save(self, *args, **kwargs):
         """
         Save instance and set created_by.
         """
         if self._state.adding:
             self.set_created_by()
+
+        self.set_updated_by()
 
         super().save(*args, **kwargs)

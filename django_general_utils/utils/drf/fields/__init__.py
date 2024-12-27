@@ -1,2 +1,3 @@
+from .lazy_ref_field import LazyRefSerializerField
 from .multiple_choice_field import MultipleChoiceField
 from .nested_primary_key_related_field import NestedPrimaryKeyRelatedField, PrimaryKeyRelatedField

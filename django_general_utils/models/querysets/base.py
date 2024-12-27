@@ -1,14 +1,12 @@
-from asgiref.sync import sync_to_async
-from django.core.cache import cache
 from django.core.exceptions import FieldDoesNotExist
 from django.core.exceptions import ValidationError
+from django.db import router, transaction
 from django.db.models import Q
 from django.db.models.constants import LOOKUP_SEP
 from ordered_model.models import OrderedModelQuerySet
 from safedelete.config import FIELD_NAME
 from safedelete.queryset import SafeDeleteQueryset
 
-from ...utils import delete_cache
 from ...utils.drf.validation_errors import ListValidationError
 
 
@@ -115,70 +113,6 @@ class BaseModelQuerySet(SafeDeleteQueryset, OrderedModelQuerySet):
 
         return self
 
-    def update(self, **kwargs):
-        response = super().update(**kwargs)
-
-        if hasattr(self.model, 'KEY_CACHE'):
-            delete_cache(self.model.KEY_CACHE)
-
-        return response
-
-    def create(self, **kwargs):
-        response = super().create(**kwargs)
-
-        if hasattr(self.model, 'KEY_CACHE'):
-            delete_cache(self.model.KEY_CACHE)
-
-        return response
-
-    def get_or_create(self, defaults=None, **kwargs):
-        response = super().get_or_create(defaults=defaults, **kwargs)
-
-        if hasattr(self.model, 'KEY_CACHE'):
-            delete_cache(self.model.KEY_CACHE)
-
-        return response
-
-    def update_or_create(self, defaults=None, **kwargs):
-        response = super().update_or_create(defaults=defaults, **kwargs)
-
-        if hasattr(self.model, 'KEY_CACHE'):
-            delete_cache(self.model.KEY_CACHE)
-
-        return response
-
-    async def aupdate(self, **kwargs):
-        response = await super().aupdate(**kwargs)
-
-        if hasattr(self.model, 'KEY_CACHE'):
-            await sync_to_async(delete_cache)('KEY_CACHE')
-
-        return response
-
-    async def acreate(self, **kwargs):
-        response = await super().acreate(**kwargs)
-
-        if hasattr(self.model, 'KEY_CACHE'):
-            await sync_to_async(delete_cache)('KEY_CACHE')
-
-        return response
-
-    async def aget_or_create(self, defaults=None, **kwargs):
-        response = await super().aget_or_create(defaults=defaults, **kwargs)
-
-        if hasattr(self.model, 'KEY_CACHE'):
-            await sync_to_async(delete_cache)('KEY_CACHE')
-
-        return response
-
-    async def aupdate_or_create(self, defaults=None, **kwargs):
-        response = await super().aupdate_or_create(defaults=defaults, **kwargs)
-
-        if hasattr(self.model, 'KEY_CACHE'):
-            await sync_to_async(delete_cache)('KEY_CACHE')
-
-        return response
-
     def bulk_create(self, objs, *args, **kwargs):
         full_clean = kwargs.pop('full_clean', True)
 
@@ -195,10 +129,12 @@ class BaseModelQuerySet(SafeDeleteQueryset, OrderedModelQuerySet):
             if any([len(_error.message_dict) > 0 for _error in errors]):
                 raise ListValidationError(errors)
 
-        response = super().bulk_create(objs, *args, **kwargs)
+        using = kwargs.get('using') or router.db_for_write(self.model)
 
-        if hasattr(self.model, 'KEY_CACHE'):
-            delete_cache(self.model.KEY_CACHE)
+        with transaction.atomic(using=using):
+            if hasattr(self.model, '_assign_auto_ids'):
+                self.model._assign_auto_ids(objs, using=using)
+            response = super().bulk_create(objs, *args, **kwargs)
 
         return response
 
@@ -219,8 +155,5 @@ class BaseModelQuerySet(SafeDeleteQueryset, OrderedModelQuerySet):
                 raise ListValidationError(errors)
 
         response = super().bulk_update(objs, *args, **kwargs)
-
-        if hasattr(self.model, 'KEY_CACHE'):
-            delete_cache(self.model.KEY_CACHE)
 
         return response

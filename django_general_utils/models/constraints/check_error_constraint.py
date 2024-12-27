@@ -15,10 +15,18 @@ class CheckErrorConstraint(BaseConstraint, models.CheckConstraint):
         return sql % tuple(schema_editor.quote_value(p) for p in params)
 
     def validate(self, model, instance, exclude=None, using=DEFAULT_DB_ALIAS):
-        against = instance._get_field_value_map(meta=model._meta, exclude=exclude)
+        # Django < 5.0
+        if hasattr(instance, '_get_field_value_map') and callable(getattr(instance, '_get_field_value_map')):
+            against = instance._get_field_value_map(meta=model._meta, exclude=exclude)
+        elif hasattr(instance, '_get_field_expression_map') and callable(getattr(instance, '_get_field_expression_map')):
+            against = instance._get_field_expression_map(meta=model._meta, exclude=exclude)
+        else:
+            raise ValueError('instance must have a method "_get_field_value_map" or "_get_field_expression_map"')
 
         try:
             if Q(self.check).check(against, using=using):
-                raise ValidationError(self.get_violation_error_message())
+                raise ValidationError(
+                    self.get_violation_error_message(), code=self.violation_error_code
+                )
         except FieldError:
             pass

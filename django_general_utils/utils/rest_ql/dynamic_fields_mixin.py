@@ -2,6 +2,7 @@ from django.utils.functional import cached_property
 from django_restql import mixins
 from django_restql.fields import DynamicSerializerMethodField
 from rest_framework import serializers
+from rest_framework.relations import ManyRelatedField
 from rest_framework.serializers import ValidationError
 
 
@@ -15,11 +16,12 @@ class DynamicFieldsMixin(mixins.DynamicFieldsMixin):
 
     @staticmethod
     def is_nested_field(field_name, field, raise_exception=False):
-        from ..drf.fields import NestedPrimaryKeyRelatedField
+        from ..drf.fields import NestedPrimaryKeyRelatedField, LazyRefSerializerField
 
         nested_classes = (
             serializers.Serializer, serializers.ListSerializer,
-            DynamicSerializerMethodField, NestedPrimaryKeyRelatedField
+            DynamicSerializerMethodField, NestedPrimaryKeyRelatedField,
+            LazyRefSerializerField, ManyRelatedField
         )
 
         if isinstance(field, nested_classes):

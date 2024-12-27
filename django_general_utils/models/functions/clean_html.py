@@ -13,7 +13,7 @@ class CleanHtml(Func):
         @param field: campo
         """
         main_pattern = re.compile(r'<[^>]*>|[\n\r\t]|^\s+|\s+$', re.IGNORECASE)
-        sec_pattern = re.compile(r'\s{2,}', re.IGNORECASE)
+        sec_pattern = re.compile(r'\s{2,}|&nbsp;', re.IGNORECASE)
 
         super().__init__(
             Func(
