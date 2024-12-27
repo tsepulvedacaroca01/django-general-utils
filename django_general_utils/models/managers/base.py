@@ -6,6 +6,7 @@ from queryable_properties import managers
 from safedelete.config import FIELD_NAME
 from safedelete.managers import SafeDeleteManager
 
+from django_general_utils.utils import delete_cache
 from ..querysets.base import BaseModelQuerySet
 from ...utils.drf.validation_errors import ListValidationError
 
@@ -197,6 +198,7 @@ class BaseModelManager(
                 }
             ).delete()
 
-        self.model._delete_cache()
+        if hasattr(self.model, 'KEY_CACHE'):
+            delete_cache(self.model.KEY_CACHE)
 
         return instance_created, models_to_update
