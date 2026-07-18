@@ -6,7 +6,6 @@ from unittest import mock
 import django
 from django.conf import settings
 
-
 if not settings.configured:
     settings.configure(
         BASE_DIR=os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'django_general_utils')),
@@ -28,9 +27,8 @@ if not settings.configured:
     )
     django.setup()
 
-from django.db import connection, models
 from django.core.management import call_command
-
+from django.db import connection, models
 
 UUID_V2_PATH = os.path.abspath(
     os.path.join(
