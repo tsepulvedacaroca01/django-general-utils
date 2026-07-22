@@ -127,10 +127,6 @@ Dos cuidados al tocar `dependencies`:
 - `numpy` está declarado explícito porque `models/fields/vector_field.py` hace `import numpy as np`
   directamente — con `pip` se colaba de rebote como transitiva de `pgvector`, pero `uv` no instala nada
   que no esté declarado, así que hay que listarlo a mano.
-- `Django` está acotado a `<5.0` (`Django>=4.2.4,<5.0`) porque `pytest.ini` filtra
-  `django.utils.deprecation.RemovedInDjango50Warning`, una clase que Django 5.x eliminó — sin el techo,
-  `uv lock` resuelve a la última versión disponible y la suite ni siquiera arranca. Si en algún momento
-  se migra el proyecto a Django 5, hay que limpiar ese `filterwarnings` en `pytest.ini` primero.
 
 Comandos típicos de uv (dentro del contenedor, o localmente si tenés `uv` instalado — pero ojo con la
 siguiente sección, localmente no vas a poder *correr* los tests igual):
