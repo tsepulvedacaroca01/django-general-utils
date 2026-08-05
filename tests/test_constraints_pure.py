@@ -149,6 +149,17 @@ class CheckModelRelationConstraintTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             constraint.validate(model=None, instance=deleted_instance)
 
+    def test_does_not_shadow_base_constraint_system_check(self):
+        # Regression test: `django.db.models.BaseConstraint.check(model, connection)` is
+        # Django's own system-check hook, invoked by `Model.check()` (e.g. on every
+        # `manage.py migrate`/`check`) for every constraint on the model. Storing our
+        # validation callable as `self.check` used to shadow that inherited method, so
+        # Django ended up calling e.g. `check=lambda instance: True` with `(model,
+        # connection)` instead - a TypeError, not the intended validation call.
+        constraint = CheckModelRelationConstraint(name='c', check=lambda instance: True)
+
+        self.assertEqual(constraint.check(model=None, connection=None), [])
+
 
 class CheckEditableConstraintTests(unittest.TestCase):
     class _FakeTracker:

@@ -15,7 +15,14 @@ class CheckModelRelationConstraint(BaseConstraint):
             validate_on_delete=False,
             violation_error_message=None
     ):
-        self.check = check
+        # Stored as `check_func`, not `check` — `check` is a method name reserved by
+        # `django.db.models.BaseConstraint.check(model, connection)` (Django's own system
+        # check hook, called by `Model.check()`/`_check_constraints`). Naming this attribute
+        # `check` shadows that inherited method with our validation callable, so Django ends
+        # up calling e.g. `validate_client_flow_flags(model, connection)` instead of the real
+        # system check, raising a TypeError. The public `check=` kwarg is kept unchanged so
+        # existing migrations that pass `check=...` keep working.
+        self.check_func = check
         self.validate_on_create = validate_on_create
         self.validate_on_update = validate_on_update
         self.validate_on_delete = validate_on_delete
@@ -42,7 +49,7 @@ class CheckModelRelationConstraint(BaseConstraint):
         if self.validate_on_delete and getattr(instance, FIELD_NAME, None) is not None:
             return None
 
-        assert self.check is not None, _('Check must be defined')
+        assert self.check_func is not None, _('Check must be defined')
 
         if not self.validate_on_create and instance._state.adding:
             return None
@@ -50,7 +57,7 @@ class CheckModelRelationConstraint(BaseConstraint):
         if not self.validate_on_update and not instance._state.adding:
             return None
 
-        check_result = self.check(instance)
+        check_result = self.check_func(instance)
 
         if isinstance(check_result, (str, dict)):
             raise ValidationError(check_result)
@@ -63,7 +70,7 @@ class CheckModelRelationConstraint(BaseConstraint):
     def __eq__(self, other):
         if isinstance(other, CheckModelRelationConstraint):
             return (
-                    self.check == other.check
+                    self.check_func == other.check_func
                     and self.validate_on_create == other.validate_on_create
                     and self.validate_on_update == other.validate_on_update
                     and self.validate_on_delete == other.validate_on_delete
@@ -75,7 +82,7 @@ class CheckModelRelationConstraint(BaseConstraint):
         path, args, kwargs = super().deconstruct()
 
         kwargs.update({
-            'check': self.check,
+            'check': self.check_func,
             'validate_on_create': self.validate_on_create,
             'validate_on_update': self.validate_on_update,
             'validate_on_delete': self.validate_on_delete,
