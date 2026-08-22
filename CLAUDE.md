@@ -30,6 +30,11 @@ Tras tocar `pyproject.toml` (`dependencies`/`dependency-groups`), correr `uv loc
 instalado ahí) y commitear el `uv.lock` actualizado — el `Dockerfile` usa `uv sync --frozen`, así que un
 lock desactualizado hace fallar el build.
 
+Cualquier `docker-compose run ... uv run ...` puede reescribir `uv.lock` solo (markers de resolución
+específicos de la plataforma del contenedor), sin que haya un cambio de dependencias real de por medio.
+Revisar `git status`/`git diff uv.lock` después de correr comandos y hacer `git restore uv.lock` si el
+único cambio es ese ruido — no commitearlo.
+
 ## Patrón de tests (importante, no es el patrón "normal" de Django)
 
 - `pytest.ini` tiene `python_files = tests/*.py` — los archivos de test deben vivir **directo** bajo
@@ -58,6 +63,56 @@ docstrings solo cuando el WHY no es obvio, etc.). Ruff (`select = ["E","F","I","
 `pyproject.toml`, pero el código preexistente (fuera de `tests/`) **no está limpio** — no lo arregles de
 paso salvo que te lo pidan explícitamente; limitate a que los archivos que vos toques/crees pasen
 `ruff check`.
+
+## `UUIDModelV3` y el comando `sync_id_as_code`
+
+`models/uuid_v3.py::UUIDModelV3` hereda de `UUIDModelV2` y cambia dos cosas: `uuid` (la PK) usa un uuid7
+propio (`utils/uuid7.py`, sin dependencia externa — Python `>=3.9` no tiene `uuid.uuid7` del stdlib, que
+recién llega en 3.14) en vez de uuid4, y `id_as_code` pasa de `queryable_property` anotada en cada query a
+`CharField` real con `db_index=True`. `Meta.ordering = ('-uuid',)` (no `-created_at`) porque con uuid7 la
+PK ya es time-ordered — ordenar por ella reusa el índice de la PK en vez de pedir uno aparte.
+
+`id_as_code` se puebla solo (creación individual, `id` preseteado, retry por colisión y `bulk_create`) vía
+hooks no-op agregados a `UUIDModelV2` (`_on_id_assigned`/`_on_id_reset`/`_on_ids_assigned`, invocados justo
+donde ya se resuelve `id` en `save()`/`_assign_auto_ids`) — así V3 no duplica el locking/retry de V2, solo
+extiende esos hooks. Si tocás el flujo de asignación de `id` en `UUIDModelV2.save()`, revisar que los tres
+hooks se sigan llamando en los mismos puntos.
+
+`management/commands/sync_id_as_code.py` detecta filas cuyo `id_as_code` guardado ya no coincide con lo
+que generarían el `_ID_AS_CODE_PREFIX_`/`_SUFFIX_`/`_LENGTH_` **actuales** de cada subclase concreta de
+`UUIDModelV3`, y por cada app afectada escribe una migración de datos (`RunPython`) con esos valores
+horneados como literales — no toca el esquema (eso lo sigue generando `makemigrations` normal). Usa
+`apps.all_models` en vez de `apps.get_models()` para el discovery porque este repo registra modelos de
+test con `app_label='tests'` sin una `AppConfig` real — `get_models()` los ignora silenciosamente.
+
+## `BaseV2`/`BaseV3` (antes `BaseWithoutSafeDeleteModel`)
+
+`models/base_without_safe_delete.py::BaseWithoutSafeDeleteModel` se renombró a `models/base_v2.py::BaseV2`
+(mismo patrón que `UUIDModelV2`), y su manager `models/managers/base_without_safe_delete.py
+::BaseWithoutSafeDeleteModelManager` se renombró a `models/managers/base_v2.py::BaseV2Manager`. El nombre
+viejo sigue siendo la **misma clase** (`BaseWithoutSafeDeleteModel is BaseV2`) en los tres import paths que
+un consumidor podría ya estar usando — `django_general_utils.models`, `.models.base_without_safe_delete` y
+`.models.managers.base_without_safe_delete` — así que ningún import existente rompe. Código nuevo dentro de
+este repo usa `BaseV2`/`BaseV2Manager`. `models/base_v3.py::BaseV3` es la versión nueva sobre
+`UUIDModelV3` — reutiliza el mismo metaclass (`ModelBaseV2Meta`) y manager (`BaseV2Manager`) que `BaseV2`,
+ninguno de los dos depende de qué `UUIDModelV*` se mezcle. Ver `tests/test_base_v2_compat.py` (identidad de
+clase entre los import paths viejo/nuevo, modelo y manager, más los deprecation warnings) y
+`tests/test_base_v3.py`.
+
+Los tres shims (`models/__init__.py`, `models/base_without_safe_delete.py`,
+`models/managers/base_without_safe_delete.py`) exponen el nombre viejo **solo** vía `__getattr__` a nivel
+de módulo (PEP 562, helper compartido en `utils/deprecation.py::deprecated_alias`) — no como asignación
+plana — para poder emitir un `DeprecationWarning` en cada acceso apuntando al nombre nuevo, sin dejar de
+devolver la clase real. `pytest.ini` tiene `filterwarnings = ignore::DeprecationWarning` a nivel de
+proyecto, así que un `pytest` normal no lo va a mostrar en el resumen — para verificar que dispara hay que
+usar `self.assertWarns(DeprecationWarning)` (fuerza el filtro `always` en su propio contexto), como en
+`tests/test_base_v2_compat.py::DeprecationWarningTests`.
+
+Si en algún momento hay que renombrar otra clase pública de forma similar: mover el código al archivo
+nuevo, y en el archivo viejo definir un `__getattr__(name)` que resuelva el nombre viejo vía
+`deprecated_alias(obj_real, f'{__name__}.{name}', 'path.completo.al.nombre.nuevo')` y haga `raise
+AttributeError` para cualquier otro nombre. Nunca usar una asignación plana (`NombreViejo = NombreNuevo`)
+para el shim — con `__getattr__` sí se puede advertir en cada acceso; con asignación plana, no.
 
 ## Bugs conocidos — documentar con tests, no arreglar sin que se pida
 

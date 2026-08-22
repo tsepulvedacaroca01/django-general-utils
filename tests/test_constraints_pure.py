@@ -151,14 +151,22 @@ class CheckModelRelationConstraintTests(unittest.TestCase):
 
     def test_does_not_shadow_base_constraint_system_check(self):
         # Regression test: `django.db.models.BaseConstraint.check(model, connection)` is
-        # Django's own system-check hook, invoked by `Model.check()` (e.g. on every
-        # `manage.py migrate`/`check`) for every constraint on the model. Storing our
-        # validation callable as `self.check` used to shadow that inherited method, so
+        # Django's own system-check hook (present on Django >=5.1; this project supports
+        # 4.2.4 through 6.0.7), invoked by `Model.check()` (e.g. on every `manage.py
+        # migrate`/`check`) for every constraint on the model. Storing our validation
+        # callable as `self.check` used to shadow that inherited method/attribute, so
         # Django ended up calling e.g. `check=lambda instance: True` with `(model,
-        # connection)` instead - a TypeError, not the intended validation call.
-        constraint = CheckModelRelationConstraint(name='c', check=lambda instance: True)
+        # connection)` instead - a TypeError, not the intended validation call. Asserting
+        # `constraint.check is not validation_callable` (rather than calling `.check()`
+        # directly) keeps this test meaningful on every supported Django version, whether
+        # or not that version defines the hook at all.
+        def validation_callable(instance):
+            return True
 
-        self.assertEqual(constraint.check(model=None, connection=None), [])
+        constraint = CheckModelRelationConstraint(name='c', check=validation_callable)
+
+        self.assertIsNot(getattr(constraint, 'check', None), validation_callable)
+        self.assertEqual(constraint.check_func, validation_callable)
 
 
 class CheckEditableConstraintTests(unittest.TestCase):

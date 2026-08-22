@@ -37,6 +37,7 @@ Agregar `'django_general_utils'` a `INSTALLED_APPS`.
 ```
 django_general_utils/
 ├── models/              modelos abstractos, managers, querysets, campos y constraints custom
+├── management/commands/ management commands (ver Management commands)
 ├── utils/               helpers de DRF, formularios, factories de test, formato, imágenes, etc.
 ├── templatetags/        tags de template genéricos
 ├── context_processors/  context processors genéricos
@@ -69,6 +70,26 @@ de una transacción, con reintentos ante colisión. Puntos clave:
 - En SQLite el lock es un no-op (`connection.vendor != 'postgresql'`) — los tests corren igual, solo sin
   el lock real.
 
+### `UUIDModelV3` (`models/uuid_v3.py`)
+
+Igual que `UUIDModelV2`, con dos cambios:
+
+- **`uuid` (la PK) usa uuid7** (`utils/uuid7.py` — implementación propia, sin dependencia externa, porque
+  `uuid.uuid7` del stdlib recién existe en Python 3.14 y este paquete soporta `>=3.9`) en vez de uuid4.
+  Al ser time-ordered (48 bits de timestamp Unix en ms + versión + random), los inserts en el índice de la
+  PK son secuenciales en vez de aleatorios — mejor locality/menos fragmentación de índice con volumen alto.
+  Por eso `Meta.ordering = ('-uuid',)` en vez de `-created_at`: ordenar por la PK reusa su propio índice en
+  vez de requerir uno aparte para `created_at`.
+- **`id_as_code` es una columna real** (`CharField`, `db_index=True`), no una `queryable_property`
+  anotada en cada query como en `UUIDModelV2`/`UUIDModel`. Se puebla **automáticamente** dondequiera que se
+  resuelve `id` — creación individual (`.save()`), `id` preseteado a mano, retry ante colisión de `id`, y
+  `bulk_create()` — así que no hay que llamar nada a mano en el flujo normal.
+
+Si cambiás `_ID_AS_CODE_PREFIX_`/`_ID_AS_CODE_SUFFIX_`/`_ID_AS_CODE_LENGTH_` en un modelo concreto después
+de tener filas existentes, esas filas quedan con el `id_as_code` viejo — correr el comando
+`sync_id_as_code` (ver [Management commands](#management-commands)) para generar la migración de datos que
+las actualiza.
+
 ### `BaseModel` (`models/base.py`)
 
 `SafeDeleteModel + OrderedModel + UUIDModel`, con soft-delete (`SOFT_DELETE_CASCADE`), historial
@@ -76,11 +97,35 @@ de una transacción, con reintentos ante colisión. Puntos clave:
 también automático). Requiere usar los campos `fields.ForeignKey`/`fields.OneToOneField` de este mismo
 paquete (no los de `django.db.models`) — el metaclass lo valida y lanza `TypeError` si no.
 
-### `BaseWithoutSafeDeleteModel` (`models/base_without_safe_delete.py`)
+### `BaseV2` (`models/base_v2.py`)
 
-Igual pero sobre `UUIDModelV2`, sin soft-delete. Agrega automáticamente métodos
+Igual que `BaseModel` pero sobre `UUIDModelV2`, sin soft-delete. Agrega automáticamente métodos
 `get_<campo>_format_decimal()` / `get_<campo>_format_currency()` (formato Babel, locale `es_CL` por
 defecto) a cualquier campo numérico.
+
+> **Nombre anterior**: esta clase se llamaba `BaseWithoutSafeDeleteModel` (`models/base_without_safe_delete.py`)
+> y su manager se llamaba `BaseWithoutSafeDeleteModelManager`
+> (`models/managers/base_without_safe_delete.py`). Ambos módulos/nombres siguen funcionando — quedaron como
+> shims de compatibilidad que re-exportan las clases reales (`BaseWithoutSafeDeleteModel is BaseV2`,
+> `BaseWithoutSafeDeleteModelManager is BaseV2Manager` — misma clase, no una copia), así que el código
+> existente que los usa **no necesita cambios de código**. Sí van a empezar a ver un
+> `DeprecationWarning` al importarlos (`'...BaseWithoutSafeDeleteModel' is deprecated ... use
+> '...BaseV2' instead`) — es solo un aviso, nada se rompe. Python ignora `DeprecationWarning` por
+> default fuera de `__main__`, así que puede no imprimirse salvo que el proyecto consumidor corra
+> con `python -W default::DeprecationWarning` o tenga algo como `warnings.simplefilter('always',
+> DeprecationWarning)`/`filterwarnings = always::DeprecationWarning` (pytest) configurado. Para
+> código nuevo, usar `BaseV2`/`BaseV2Manager` directamente.
+
+### `BaseV3` (`models/base_v3.py`)
+
+Igual que `BaseV2` pero sobre `UUIDModelV3` en vez de `UUIDModelV2` — hereda todo lo de esa sección (uuid7,
+`id_as_code` como columna real, `ordering = ('-uuid',)`). Reutiliza el mismo metaclass (`ModelBaseV2Meta`)
+y el mismo manager (`BaseV2Manager`, `models/managers/base_v2.py`) que `BaseV2` — ninguno de los dos
+depende de qué `UUIDModelV*` se mezcle. No tiene nombre anterior; es la clase nueva de esta sesión.
+
+> Si tu modelo concreto define su propio `Meta`, tiene que heredar del `Meta` de `BaseV2`/`BaseV3`
+> (`class Meta(BaseV3.Meta): ...`) para conservar el `ordering` — Django no combina automáticamente el
+> `Meta` de una clase abstracta con un `Meta` nuevo que no lo subclasea.
 
 ## Managers y querysets
 
@@ -121,6 +166,35 @@ mensaje}`) en vez de un string plano.
 > devuelve `True` **o `None`** (p. ej. una función sin `return` explícito), se considera violación. No es
 > la convención habitual de "`True` = válido" — ver `tests/test_constraints_pure.py`.
 
+## Management commands
+
+### `sync_id_as_code`
+
+Detecta, para cada subclase concreta de `UUIDModelV3` instalada en el proyecto consumidor, filas cuyo
+`id_as_code` guardado ya no coincide con lo que generarían el `_ID_AS_CODE_PREFIX_`/`_ID_AS_CODE_SUFFIX_`/
+`_ID_AS_CODE_LENGTH_` **actuales** del modelo (prefijo/sufijo cambiado, o filas nunca backfilleadas tras
+agregar la columna). No es un reemplazo de `makemigrations` — no toca el esquema, solo genera una
+**migración de datos** (`RunPython`) por cada app afectada, con el prefijo/sufijo/length horneados como
+literales en el archivo generado.
+
+```bash
+# Reporta qué modelos tienen id_as_code desincronizado y termina con error si hay alguno (para CI)
+python manage.py sync_id_as_code --check
+
+# Genera la(s) migración(es) de datos correspondientes
+python manage.py sync_id_as_code
+python manage.py migrate
+```
+
+Flujo típico al cambiar `_ID_AS_CODE_PREFIX_`/`_SUFFIX_`/`_LENGTH_` de un modelo (o al agregar `id_as_code`
+por primera vez sobre una tabla con filas existentes):
+
+1. `python manage.py makemigrations` — si `id_as_code` es un campo nuevo, esto genera la migración de
+   esquema (agregar la columna). No hace falta si el campo ya existía y solo cambió el prefijo/sufijo.
+2. `python manage.py migrate` — aplica el esquema.
+3. `python manage.py sync_id_as_code` — detecta el drift y genera la migración de datos.
+4. `python manage.py migrate` — backfillea `id_as_code` para las filas afectadas.
+
 ## Funciones de DB (`models/functions/`)
 
 `ArrayAppend`, `ArrayToString`, `CleanHtml`, `FormattedDatetime`, `RandomNumber`, `SubqueryCount`,
@@ -130,7 +204,8 @@ con flags de Postgres, `to_char`, etc.).
 ## Utils destacados (`utils/`)
 
 - **`is_valid_uuid`**, **`str_to_boolean`**, **`file_to_json`**, **`formats.format_currency/format_decimal`**
-  (Babel) — funciones puras de propósito general.
+  (Babel), **`uuid7`** (generador UUIDv7 propio, sin dependencias — usado como `default` de `UUIDModelV3.uuid`)
+  — funciones puras de propósito general.
 - **`factory/`** — `DjangoModelFactory` (factory_boy) con `_get_or_create` que intenta `create()` primero
   y solo cae a `get()` ante `IntegrityError`; `to_dict()`/`generate_dict_factory()` para volcar un factory
   a dict sin tocar la DB (usa `.stub()`); `Provider` (Faker) con RUT chileno y coordenadas de Santiago.

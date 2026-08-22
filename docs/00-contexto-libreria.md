@@ -6,10 +6,15 @@
 ser consumida por otros proyectos Django — no es un proyecto con modelos de negocio propios. El paquete
 se gestiona con **uv** (lock file `uv.lock`), no con `pip`/`setup.cfg`.
 
-Todo lo que expone son mixins **abstractos**: `UUIDModelV2`, `BaseModel`, `BaseWithoutSafeDeleteModel`,
-managers/querysets custom, utils de DRF, helpers de factories, etc. (`Meta.abstract = True` en los tres
-modelos base, ver `django_general_utils/models/`). No hay `Company`, `Product`, viewsets, serializers ni
-services reales dentro de este repo — esos viven en los proyectos que instalan la librería.
+Todo lo que expone son mixins **abstractos**: `UUIDModel`, `UUIDModelV2`, `UUIDModelV3`, `BaseModel`,
+`BaseV2`, `BaseV3`, managers/querysets custom, utils de DRF, helpers de factories, etc.
+(`Meta.abstract = True` en todos los modelos base, ver `django_general_utils/models/`). No hay `Company`,
+`Product`, viewsets, serializers ni services reales dentro de este repo — esos viven en los proyectos que
+instalan la librería.
+
+`BaseV2` se llamaba `BaseWithoutSafeDeleteModel` (vivía en `models/base_without_safe_delete.py`) — ese
+módulo/nombre se mantienen como alias de compatibilidad (misma clase, no una copia) porque hay proyectos
+consumidores que ya importan desde ahí. Código nuevo dentro de este repo (tests incluidos) usa `BaseV2`.
 
 Requiere PostgreSQL en producción (usa `pg_advisory_xact_lock`, `ArrayField`, etc.), pero los tests corren
 sobre sqlite en memoria: la lógica específica de Postgres se desactiva sola en ese entorno
@@ -20,8 +25,8 @@ sobre sqlite en memoria: la lógica específica de Postgres se desactiva sola en
 ## Qué partes de `01-tests.md` y `02-python-style.md` aplican tal cual
 
 - Estilo general (`02`): ruff, orden de imports, reglas de línea en blanco, regla de docstrings.
-- Nota de `ValidationError` vs `IntegrityError` (`01`): `BaseModel`/`BaseWithoutSafeDeleteModel` llaman
-  `full_clean()` antes de guardar, igual que en el proyecto de origen de esas convenciones.
+- Nota de `ValidationError` vs `IntegrityError` (`01`): `BaseModel`/`BaseV2`/`BaseV3` llaman `full_clean()`
+  antes de guardar, igual que en el proyecto de origen de esas convenciones.
 - `return None` explícito al final de cada test.
 
 ## Qué partes NO aplican (fueron escritas para un proyecto consumidor, ej. GMS)
@@ -71,7 +76,7 @@ concreto "de usar y tirar" dentro del propio archivo, y crea/borra su tabla manu
 involucrados:
 
 ```python
-class MyThrowawayModel(UUIDModelV2):  # o BaseWithoutSafeDeleteModel / BaseModel
+class MyThrowawayModel(UUIDModelV2):  # o UUIDModelV3 / BaseV2 / BaseV3 / BaseModel
     name = models.CharField(max_length=64, null=True, blank=True)
 
     class Meta:
@@ -94,6 +99,12 @@ class MyModelTests(unittest.TestCase):
 ```
 
 Ver `tests/test_uuid_v2.py` y `tests/test_bulk_create.py` como plantilla.
+
+Los `management/commands/` (ver `django_general_utils/management/commands/sync_id_as_code.py`) se testean
+igual: sin invocar el comando completo contra un registro global de modelos (`apps.get_models()`/
+`apps.all_models` verían también los modelos "de usar y tirar" de otros archivos de test si corren en el
+mismo proceso), sino importando y testeando directamente las funciones puras que el comando expone a nivel
+de módulo, contra el modelo concreto propio del archivo. Ver `tests/test_sync_id_as_code_command.py`.
 
 Si el modelo de prueba hereda `created_by`/`updated_by` (vienen de `UUIDModelV2`), hay que migrar
 `contenttypes` y `auth` primero, porque esas FKs apuntan a `auth.User` por defecto:
@@ -127,6 +138,10 @@ Dos cuidados al tocar `dependencies`:
 - `numpy` está declarado explícito porque `models/fields/vector_field.py` hace `import numpy as np`
   directamente — con `pip` se colaba de rebote como transitiva de `pgvector`, pero `uv` no instala nada
   que no esté declarado, así que hay que listarlo a mano.
+- Correr `uv run`/`uv sync` **dentro del contenedor** puede reescribir `uv.lock` (markers de resolución
+  específicos de esa plataforma) sin que haya cambiado ninguna dependencia real — no es necesariamente un
+  cambio a commitear. Revisar el diff (`git diff uv.lock`) y descartarlo (`git restore uv.lock`) si es solo
+  ese ruido de plataforma.
 
 Comandos típicos de uv (dentro del contenedor, o localmente si tenés `uv` instalado — pero ojo con la
 siguiente sección, localmente no vas a poder *correr* los tests igual):

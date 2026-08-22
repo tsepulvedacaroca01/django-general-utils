@@ -3,9 +3,8 @@ import uuid
 
 from django.conf import settings
 from django.db import IntegrityError, connections, models, router, transaction
-from django.db.models import Case, When, Value, BooleanField
-from django.db.models import Max
-from django.db.models.functions import Now, Concat, Length, Cast, Repeat
+from django.db.models import BooleanField, Case, Max, Value, When
+from django.db.models.functions import Cast, Concat, Length, Now, Repeat
 from django.utils.translation import gettext_lazy as _
 from django_middleware_global_request import get_request
 from model_utils.fields import AutoCreatedField, AutoLastModifiedField
@@ -181,13 +180,25 @@ class UUIDModelV2(models.Model):
         and the INSERT share the same transaction.
         """
         objs_without_id = [obj for obj in objs if obj.id is None]
-        if not objs_without_id:
-            return
-        cls._lock_id_generation(using=using)
-        next_id = cls.next_id(using=using)
-        for obj in objs_without_id:
-            obj.id = next_id
-            next_id += 1
+
+        if objs_without_id:
+            cls._lock_id_generation(using=using)
+            next_id = cls.next_id(using=using)
+            for obj in objs_without_id:
+                obj.id = next_id
+                next_id += 1
+
+        cls._on_ids_assigned(objs)
+
+    @classmethod
+    def _on_ids_assigned(cls, objs) -> None:
+        """
+        Hook invoked after ``_assign_auto_ids`` resolves ``id`` for a batch
+        of objects (bulk_create path). No-op here; subclasses that derive
+        extra fields from ``id`` (e.g. ``UUIDModelV3.id_as_code``) override
+        this instead of duplicating the locking/retry logic.
+        """
+        return None
 
     def set_created_by(self, user = None) -> None:
         """
@@ -236,6 +247,26 @@ class UUIDModelV2(models.Model):
 
         return None
 
+    def _on_id_assigned(self) -> None:
+        """
+        Hook invoked right after ``self.id`` is resolved during an
+        individual save (auto-assigned or explicitly preset). No-op here;
+        subclasses that derive extra fields from ``id`` (e.g.
+        ``UUIDModelV3.id_as_code``) override this instead of duplicating the
+        locking/retry logic in ``save``.
+        """
+        return None
+
+    def _on_id_reset(self) -> None:
+        """
+        Hook invoked when an auto-assigned ``id`` collided and is being
+        retried, right after ``self.id`` is cleared. No-op here; subclasses
+        that derive fields from ``id`` in ``_on_id_assigned`` override this
+        to clear the now-stale derived value so it gets recomputed for the
+        next attempt.
+        """
+        return None
+
     def save(self, *args, **kwargs):
         """
         Save instance and set created_by.
@@ -246,6 +277,8 @@ class UUIDModelV2(models.Model):
         self.set_updated_by()
 
         if self.id is not None or not self._state.adding:
+            if self.id is not None:
+                self._on_id_assigned()
             return super().save(*args, **kwargs)
 
         using = kwargs.get('using') or router.db_for_write(self.__class__, instance=self)
@@ -255,10 +288,12 @@ class UUIDModelV2(models.Model):
                 with transaction.atomic(using=using):
                     self.__class__._lock_id_generation(using=using)
                     self.id = self.__class__.next_id(using=using)
+                    self._on_id_assigned()
                     return super().save(*args, **kwargs)
             except IntegrityError:
                 conflicting_id = self.id
                 self.id = None
+                self._on_id_reset()
 
                 if conflicting_id is None:
                     raise
