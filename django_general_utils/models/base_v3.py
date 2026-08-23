@@ -16,7 +16,7 @@ class BaseV3(OrderedModel, UUIDModelV3, metaclass=ModelBaseV2Meta):
 
     class Meta:
         abstract = True
-        ordering = ('-uuid',)
+        ordering = ('-created_at',)
 
     def save(self, **kwargs):
         full_clean = kwargs.pop('full_clean', True)

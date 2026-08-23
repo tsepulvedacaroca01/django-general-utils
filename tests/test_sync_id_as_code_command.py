@@ -1,6 +1,9 @@
+import io
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
+from unittest import mock
 
 import django
 from django.conf import settings
@@ -33,8 +36,10 @@ from django.db import connection, models
 from ordered_model.models import OrderedModel
 
 from django_general_utils.management.commands.sync_id_as_code import (
+    Command,
     count_drift,
     discover_id_as_code_models,
+    id_as_code_column_exists,
     next_migration_number,
     render_migration,
     write_migration,
@@ -70,6 +75,18 @@ class SyncIdAsCodeModel(SyncIdAsCodeTestBase):
         db_table = 'test_sync_id_as_code_model'
 
 
+class SyncIdAsCodeModelWithoutTable(SyncIdAsCodeTestBase):
+    """
+    Deliberately never gets a table created for it (see below) — stands in for a model whose
+    migration hasn't been applied against the database/schema this command is running against at
+    all (e.g. a multi-tenant setup where the command runs outside the tenant schema this model's
+    table lives in), as opposed to `SyncIdAsCodeModel` with just the column dropped.
+    """
+    class Meta:
+        app_label = 'tests'
+        db_table = 'test_sync_id_as_code_model_without_table'
+
+
 class _FakeGraph:
     def __init__(self, leaves):
         self._leaves = leaves
@@ -82,6 +99,32 @@ class _FakeLoader:
     def __init__(self, disk_migrations, leaves=()):
         self.disk_migrations = disk_migrations
         self.graph = _FakeGraph(leaves)
+
+
+@contextmanager
+def _table_without_id_as_code_column(model):
+    """
+    Recreate `model`'s table without its `id_as_code` column, to simulate a database where the
+    schema migration adding that column hasn't been applied yet. Deliberately doesn't use
+    `ALTER TABLE ... DROP COLUMN` (SQLite refuses to drop a column that still has an index on
+    it) or `schema_editor.remove_field()` (rebuilds the table but, for this particular model
+    composition, keeps the "removed" column in the rebuilt table anyway) — dropping and
+    recreating the table from scratch sidesteps both.
+    """
+    with connection.schema_editor() as schema_editor:
+        schema_editor.delete_model(model)
+
+    with connection.cursor() as cursor:
+        cursor.execute(f'CREATE TABLE {model._meta.db_table} (uuid char(32) NOT NULL PRIMARY KEY, id bigint NULL)')
+
+    try:
+        yield
+    finally:
+        with connection.cursor() as cursor:
+            cursor.execute(f'DROP TABLE {model._meta.db_table}')
+
+        with connection.schema_editor() as schema_editor:
+            schema_editor.create_model(model)
 
 
 class SyncIdAsCodeCommandTests(unittest.TestCase):
@@ -123,6 +166,47 @@ class SyncIdAsCodeCommandTests(unittest.TestCase):
         SyncIdAsCodeModel.objects.filter(pk=instance.pk).update(id_as_code=None)
 
         self.assertEqual(count_drift(SyncIdAsCodeModel), 1)
+
+    def test_id_as_code_column_exists_true_normally(self):
+        self.assertTrue(id_as_code_column_exists(SyncIdAsCodeModel))
+
+    def test_id_as_code_column_exists_false_when_table_missing_entirely(self):
+        # Regression: a real Postgres (django-tenants) project hit
+        # `UndefinedTable: relation "organization_company" does not exist` because the command
+        # ran against a schema this model's table doesn't live in at all — one level up from the
+        # "column missing" case above, but should be handled the same way (skip, don't crash).
+        self.assertFalse(id_as_code_column_exists(SyncIdAsCodeModelWithoutTable))
+
+    def test_id_as_code_column_exists_recovers_connection_for_later_models(self):
+        # A failed introspection query used to be able to leave the connection/transaction in a
+        # state where every subsequent query in the same run would fail too (Postgres aborts the
+        # whole transaction on error). Checking a real, valid model right after a missing-table
+        # one must still work.
+        self.assertFalse(id_as_code_column_exists(SyncIdAsCodeModelWithoutTable))
+        self.assertTrue(id_as_code_column_exists(SyncIdAsCodeModel))
+
+    def test_id_as_code_column_exists_false_when_not_migrated_yet(self):
+        # Regression: a real Postgres project hit `UndefinedColumn: id_as_code does not exist`
+        # because the schema migration adding the column hadn't been applied to that database
+        # yet when `sync_id_as_code` ran.
+        with _table_without_id_as_code_column(SyncIdAsCodeModel):
+            self.assertFalse(id_as_code_column_exists(SyncIdAsCodeModel))
+
+    def test_handle_skips_model_missing_column_instead_of_crashing(self):
+        with _table_without_id_as_code_column(SyncIdAsCodeModel):
+            out = io.StringIO()
+            command = Command(stdout=out)
+
+            with mock.patch(
+                'django_general_utils.management.commands.sync_id_as_code.discover_id_as_code_models',
+                return_value=[SyncIdAsCodeModel],
+            ):
+                command.handle(check=False)
+
+            output = out.getvalue()
+            self.assertIn('Skipped', output)
+            self.assertIn('tests.SyncIdAsCodeModel', output)
+            self.assertNotIn('already in sync', output)
 
     def test_next_migration_number_starts_at_one(self):
         loader = _FakeLoader(disk_migrations={})

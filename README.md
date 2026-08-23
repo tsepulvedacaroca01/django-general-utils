@@ -191,9 +191,65 @@ por primera vez sobre una tabla con filas existentes):
 
 1. `python manage.py makemigrations` — si `id_as_code` es un campo nuevo, esto genera la migración de
    esquema (agregar la columna). No hace falta si el campo ya existía y solo cambió el prefijo/sufijo.
-2. `python manage.py migrate` — aplica el esquema.
+2. `python manage.py migrate` — aplica el esquema. **Este paso es obligatorio antes que `sync_id_as_code`**:
+   la tabla/columna tiene que existir físicamente antes de poder consultarla/actualizarla — si un modelo
+   sobre `UUIDModelV3` (o `BaseV3`) todavía no tiene esta migración aplicada en la base/schema donde corrés
+   el comando (incluye setups multi-tenant tipo `django-tenants`, donde el comando puede estar corriendo
+   contra un schema donde ese modelo ni siquiera tiene tabla), `sync_id_as_code` lo salta con un aviso en
+   vez de fallar para el resto de modelos.
 3. `python manage.py sync_id_as_code` — detecta el drift y genera la migración de datos.
 4. `python manage.py migrate` — backfillea `id_as_code` para las filas afectadas.
+
+#### Uso con `django-tenants`
+
+`sync_id_as_code` no sabe nada de tenants — solo mira la conexión/schema actual. En un proyecto con
+`django-tenants`, cada schema (el `public` compartido y cada tenant) tiene su propio subconjunto de tablas
+visibles, así que hay que recorrerlos explícitamente con los comandos que ya trae `django-tenants`:
+`tenant_command`/`all_tenants_command` (correr un comando en un schema puntual o en todos, ver [su
+documentación](https://django-tenants.readthedocs.io/en/latest/use.html)).
+
+**1. Migrar el esquema en todos lados primero** (siempre antes de `sync_id_as_code` — ver el paso 2 de
+arriba):
+
+```bash
+python manage.py migrate_schemas --shared   # aplica el esquema en public (SHARED_APPS)
+python manage.py migrate_schemas            # aplica el esquema en cada tenant (TENANT_APPS)
+```
+
+**2. Revisar drift en todos lados** (`--check`, informativo, no escribe nada):
+
+```bash
+python manage.py sync_id_as_code --check                    # apps de public (SHARED_APPS)
+python manage.py all_tenants_command sync_id_as_code --check  # apps de cada tenant (TENANT_APPS)
+```
+
+**3. Generar las migraciones de datos — a mano, corriendo el modo escritura (sin `--check`) UNA sola vez
+por schema representativo**, no con `all_tenants_command` en un solo paso:
+
+```bash
+python manage.py sync_id_as_code                              # apps de public, si el check de arriba mostró drift ahí
+python manage.py tenant_command sync_id_as_code --schema=<un_tenant_con_drift>
+```
+
+> ⚠️ **Por qué no `all_tenants_command sync_id_as_code` (sin `--check`) directo**: el archivo de migración
+> generado (`NNNN_sync_id_as_code.py`) no depende del contenido de un tenant en particular — el
+> `RunPython` que escribe recalcula `id_as_code` a partir de `id` con el prefijo/sufijo/length actuales, y
+> corre igual sea cual sea el schema donde después se aplique con `migrate`. Si corrés el modo escritura
+> tenant por tenant con `all_tenants_command`, cada tenant que todavía muestre drift para la misma app va a
+> generar **otro** archivo de migración para esa app (`0001_sync_id_as_code.py`, `0002_sync_id_as_code.py`,
+> ...) — funcionalmente inofensivo (cada uno vuelve a aplicar el mismo cálculo, idempotente) pero deja
+> migraciones redundantes en el historial. Alcanza con generarla una vez por app, contra **cualquier**
+> schema donde ese modelo tenga al menos una fila con drift — no hace falta que sea el mismo tenant para
+> todas las apps: si `organization.Company` solo muestra drift en `tenant_a` e `inventory.Product` solo en
+> `tenant_b`, corré el paso 3 una vez contra cada uno. Revisá `git status` después de cada corrida — si no
+> aparece ningún archivo nuevo, ya no queda nada por generar.
+
+**4. Aplicar las migraciones de datos generadas, en todos lados:**
+
+```bash
+python manage.py migrate_schemas --shared
+python manage.py migrate_schemas
+```
 
 ## Funciones de DB (`models/functions/`)
 

@@ -85,6 +85,25 @@ horneados como literales — no toca el esquema (eso lo sigue generando `makemig
 `apps.all_models` en vez de `apps.get_models()` para el discovery porque este repo registra modelos de
 test con `app_label='tests'` sin una `AppConfig` real — `get_models()` los ignora silenciosamente.
 
+Antes de consultar cada modelo, `handle()` llama a `id_as_code_column_exists(model)` (introspección real
+contra la DB vía `connection.introspection.get_table_description`) y salta el modelo con un warning si la
+tabla o la columna todavía no existen físicamente — reportado en producción (Postgres) primero como
+`psycopg2.errors.UndefinedColumn` (columna sin migrar) y después, en un setup multi-tenant con
+`django-tenants`, como `UndefinedTable` (la tabla del modelo directamente no existe en el schema contra el
+que corre el comando). `id_as_code_column_exists` atrapa `django.db.Error` en general en vez de intentar
+enumerar cada excepción específica por backend/setup — cualquier falla de introspección se trata igual
+(saltar el modelo) — y hace `connection.close()` al capturarla, porque en Postgres una query fallida dentro
+de una transacción abierta deja la conexión en estado "aborted": sin cerrarla, el próximo modelo chequeado
+en el mismo `for` fallaría también aunque esté perfectamente migrado. Sin este guard, un solo modelo
+sin migrar/fuera de schema tira abajo el comando entero (ni siquiera reporta el resto). Ver
+`tests/test_sync_id_as_code_command.py::test_id_as_code_column_exists_*` (incluye
+`_false_when_table_missing_entirely` y `_recovers_connection_for_later_models`) y
+`test_handle_skips_model_missing_column_instead_of_crashing` — usan un helper (`_table_without_id_as_code_column`)
+que recrea la tabla desde cero para simular el estado "sin migrar", porque tanto `ALTER TABLE ... DROP
+COLUMN` (SQLite rechaza dropear una columna con índice) como `schema_editor.remove_field()` (para esta
+composición de modelo puntual, el rebuild de tabla de SQLite no dropea la columna) resultaron poco
+confiables para este caso de test.
+
 ## `BaseV2`/`BaseV3` (antes `BaseWithoutSafeDeleteModel`)
 
 `models/base_without_safe_delete.py::BaseWithoutSafeDeleteModel` se renombró a `models/base_v2.py::BaseV2`

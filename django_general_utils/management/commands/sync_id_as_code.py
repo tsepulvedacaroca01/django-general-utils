@@ -2,7 +2,8 @@ import os
 
 from django.apps import apps
 from django.core.management.base import BaseCommand, CommandError
-from django.db import DEFAULT_DB_ALIAS, connections
+from django.db import DEFAULT_DB_ALIAS, connections, router
+from django.db import Error as DatabaseError
 from django.db.migrations.loader import MigrationLoader
 
 from ...models.uuid_v3 import UUIDModelV3
@@ -55,6 +56,30 @@ def discover_id_as_code_models() -> list:
         for model in app_models.values()
         if issubclass(model, UUIDModelV3) and not model._meta.abstract
     ]
+
+
+def id_as_code_column_exists(model, using=None) -> bool:
+    """
+    Whether ``model``'s table exists *and* already has the ``id_as_code`` column in the
+    database. False covers both "the table doesn't exist yet where we're looking" (e.g. a
+    multi-tenant setup where this command runs against a schema this model doesn't live in —
+    Postgres' ``UndefinedTable``) and "the table exists but the column hasn't been migrated yet"
+    (``UndefinedColumn``). Either way, querying/backfilling the model would fail, so callers
+    should skip it instead of counting drift on it. Any introspection failure here is treated the
+    same way (skip) rather than trying to special-case every backend/setup's exact error class,
+    and closes the connection afterwards so a Postgres transaction left in an aborted state by
+    the failed query doesn't take out every other model checked in the same run.
+    """
+    connection = connections[using or router.db_for_read(model)]
+
+    try:
+        with connection.cursor() as cursor:
+            columns = connection.introspection.get_table_description(cursor, model._meta.db_table)
+    except DatabaseError:
+        connection.close()
+        return False
+
+    return any(column.name == 'id_as_code' for column in columns)
 
 
 def count_drift(model, using=None) -> int:
@@ -147,8 +172,13 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         drifted_by_app = {}
+        skipped_models = []
 
         for model in discover_id_as_code_models():
+            if not id_as_code_column_exists(model):
+                skipped_models.append(model)
+                continue
+
             drifted_count = count_drift(model)
 
             if drifted_count == 0:
@@ -157,8 +187,18 @@ class Command(BaseCommand):
             drifted_by_app.setdefault(model._meta.app_label, []).append(model)
             self.stdout.write(f'{model._meta.label} has {drifted_count} row(s) with a stale id_as_code.')
 
+        if skipped_models:
+            self.stdout.write(self.style.WARNING(
+                "Skipped (table/id_as_code column not found on this database — either the "
+                "migration hasn't been applied here yet, or this model doesn't live in the "
+                "schema/database this command is running against): "
+                + ', '.join(model._meta.label for model in skipped_models)
+            ))
+
         if not drifted_by_app:
-            self.stdout.write(self.style.SUCCESS('id_as_code is already in sync for every model.'))
+            if not skipped_models:
+                self.stdout.write(self.style.SUCCESS('id_as_code is already in sync for every model.'))
+
             return
 
         if options['check']:
