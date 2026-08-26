@@ -10,6 +10,14 @@ class BaseModelWithoutSafeDeleteQuerySet(OrderedModelQuerySet):
         """ Return only active records"""
         return self.filter(is_active=True)
 
+    def filter_queryable_property(self, **kwargs):
+        """
+        Set the filter to be used when querying queryable properties.
+        """
+        self.model._queryable_property_params = self.model._queryable_property_params | kwargs
+
+        return self
+
     def bulk_create(self, objs, *args, **kwargs):
         full_clean = kwargs.pop('full_clean', True)
 
