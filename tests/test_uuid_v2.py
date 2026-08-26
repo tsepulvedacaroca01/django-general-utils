@@ -93,6 +93,13 @@ class UUIDModelV2SaveTests(unittest.TestCase):
         self.assertEqual(instance.id, 2)
         self.assertEqual(UUIDModelV2TestModel.objects.count(), 2)
 
+    def test_created_at_is_indexed(self):
+        # Meta.ordering = ('-created_at',) needs this to not be a full-table sort on every
+        # query — without it, only `-uuid` ordering (BaseV3's UUIDModelV3 default) would be
+        # index-backed. BaseV3 itself deliberately keeps `-created_at` (not `-uuid`) so ordering
+        # stays correct across a migration from uuid4 (BaseV2) to uuid7 rows (see CLAUDE.md).
+        self.assertTrue(UUIDModelV2._meta.get_field('created_at').db_index)
+
 
 if __name__ == '__main__':
     unittest.main()

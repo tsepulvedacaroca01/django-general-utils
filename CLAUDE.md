@@ -35,6 +35,11 @@ específicos de la plataforma del contenedor), sin que haya un cambio de depende
 Revisar `git status`/`git diff uv.lock` después de correr comandos y hacer `git restore uv.lock` si el
 único cambio es ese ruido — no commitearlo.
 
+Si la red del host/Docker está caída, `docker-compose run` falla igual (reinstala el paquete local en cada
+invocación por el bind mount, y eso intenta resolver contra PyPI). Agregar `--no-sync` (`uv run --no-sync
+pytest ...`) corre directo contra lo que ya está en `/opt/venv`, sin red — sirve mientras no se haya
+tocado `pyproject.toml`/`uv.lock`.
+
 ## Patrón de tests (importante, no es el patrón "normal" de Django)
 
 - `pytest.ini` tiene `python_files = tests/*.py` — los archivos de test deben vivir **directo** bajo
@@ -51,6 +56,13 @@ Revisar `git status`/`git diff uv.lock` después de correr comandos y hacer `git
 - Cualquier modelo concreto que herede de `BaseModel` (con safedelete) **debe** usar
   `django_general_utils.models.fields.ForeignKey`/`OneToOneField`, nunca los de `django.db.models` — el
   metaclass lo valida y lanza `TypeError` al definir la clase si no.
+- `BaseModel` no puede usar el `app_label='tests'` genérico: su metaclass agrega `HistoricalRecords()`
+  automáticamente, y `django-simple-history` necesita `apps.app_configs[app_label]` (un `AppConfig` real y
+  registrado) para resolver el modelo histórico dinámico — `'tests'` no lo es, así que un `BaseModel`
+  concreto con ese app_label explota con `KeyError: 'tests'` al definirse. Usar `app_label='auth'` (o
+  cualquier otra app real de `INSTALLED_APPS`) en su lugar — ver `tests/test_relation_fields.py`.
+  `UUIDModelV2`/`UUIDModelV3`/`BaseV2`/`BaseV3` no tienen este requisito, `app_label='tests'` funciona
+  normal con ellos.
 - Importar cualquier cosa bajo `django_general_utils.models.*` dispara la cadena completa de
   `models/__init__.py` (incluye `ArrayField`, que requiere `psycopg2` instalado, y `vector_field.py`, que
   requiere `numpy`) — ya están en `dependency-groups.test`, no hay que agregarlos de nuevo salvo que se
@@ -114,9 +126,20 @@ un consumidor podría ya estar usando — `django_general_utils.models`, `.model
 `.models.managers.base_without_safe_delete` — así que ningún import existente rompe. Código nuevo dentro de
 este repo usa `BaseV2`/`BaseV2Manager`. `models/base_v3.py::BaseV3` es la versión nueva sobre
 `UUIDModelV3` — reutiliza el mismo metaclass (`ModelBaseV2Meta`) y manager (`BaseV2Manager`) que `BaseV2`,
-ninguno de los dos depende de qué `UUIDModelV*` se mezcle. Ver `tests/test_base_v2_compat.py` (identidad de
-clase entre los import paths viejo/nuevo, modelo y manager, más los deprecation warnings) y
-`tests/test_base_v3.py`.
+ninguno de los dos depende de qué `UUIDModelV*` se mezcle. `BaseV3.Meta.ordering` es `('-created_at',)`, NO
+`('-uuid',)` — a propósito, pisa el default de `UUIDModelV3` (decisión explícita del usuario, confirmada,
+no arreglar). Dos motivos: (1) un proyecto que migra `BaseV2` → `BaseV3` tiene filas viejas en `uuid4`
+(aleatorio) conviviendo con filas nuevas en `uuid7` (time-ordered) — bajo `-uuid` las filas viejas
+quedarían en orden efectivamente aleatorio; `-uuid` solo es correcto en un modelo que nace 100% en `uuid7`
+sin datos heredados (por eso `UUIDModelV3` sí lo usa como default — no tiene ese baggage). (2) mantener el
+ordering visible igual al de `BaseV2` para no romper el comportamiento de proyectos que ya migraron en
+producción (gms-django ya lo hizo en todos sus modelos). Para que `-created_at` no pierda eficiencia frente
+a `-uuid` (que reusa gratis el índice de la PK), `UUIDModelV2.created_at` tiene `db_index=True` explícito
+— `AutoCreatedField` (`django-model-utils`) no indexa por default, así que sin esto `ORDER BY created_at
+DESC` sería un sort completo en cada query. Ver `tests/test_uuid_v2.py::test_created_at_is_indexed`.
+
+Ver `tests/test_base_v2_compat.py` (identidad de clase entre los import paths viejo/nuevo, modelo y
+manager, más los deprecation warnings) y `tests/test_base_v3.py`.
 
 Los tres shims (`models/__init__.py`, `models/base_without_safe_delete.py`,
 `models/managers/base_without_safe_delete.py`) exponen el nombre viejo **solo** vía `__getattr__` a nivel
@@ -132,6 +155,65 @@ nuevo, y en el archivo viejo definir un `__getattr__(name)` que resuelva el nomb
 `deprecated_alias(obj_real, f'{__name__}.{name}', 'path.completo.al.nombre.nuevo')` y haga `raise
 AttributeError` para cualquier otro nombre. Nunca usar una asignación plana (`NombreViejo = NombreNuevo`)
 para el shim — con `__getattr__` sí se puede advertir en cada acceso; con asignación plana, no.
+
+## Parche de `FieldTracker` para PKs con `uuid7` (`models/_field_tracker_patch.py`)
+
+`model_utils.FieldTracker` (usado automáticamente por `ModelBaseMeta`/`ModelBaseV2Meta` en cualquier
+modelo concreto, salvo que ya defina `tracker` a mano) decide si una instancia es "nueva" con
+`not instance.pk`. Con una PK autoincremental eso es correcto (`pk` es `None` hasta el `INSERT`), pero con
+`uuid7` como `default` de la PK (`BaseV2`/`BaseV3`) la instancia **ya tiene un `pk` truthy al construirse**
+en memoria, antes de guardarse — el tracker terminaba tratando los valores recién construidos (los kwargs
+del constructor) como si fueran el estado "guardado" en la base. Consecuencia concreta:
+`CheckFlowStatusConstraint` (`models/constraints/check_flow_status.py`) usa
+`instance.tracker.has_changed(field)` como primer gate de `validate()` — si un campo de estado se setea
+**una sola vez**, en el constructor (`Modelo(status='X')`, patrón común vía `ModelForm`/`.create()`), y
+nunca se toca de nuevo antes del primer `save()`, el tracker sin parchear reportaba `has_changed() ==
+False` (comparaba contra su propia captura bogus, que coincide) — la constraint retornaba `None`
+**sin llegar nunca** a validar `initial_statuses`. Con `initial_statuses` mal validado, un estado inicial
+inválido pasaba en silencio.
+
+El parche cambia `FieldInstanceTracker.set_saved_fields()` para usar `instance._state.adding` en vez de
+`not instance.pk` — con una salvedad: `Model.from_db()` (usado por CUALQUIER carga vía queryset) llama a
+`cls(*values)` (dispara `__init__`, donde `FieldTracker` inicializa su tracker) **antes** de corregir
+`_state.adding = False` en la instancia resultante — así que sin compensar esto, toda fila cargada desde
+la base perdería su snapshot (`has_changed()` reportaría `True` para todos los campos de cualquier
+instancia recién leída, sin haber cambiado nada). Se compensa reinyectando `Model.from_db` a nivel de
+`django.db.models.Model` (una sola vez, para que lo hereden todos los modelos sin tocar cada metaclase)
+para volver a llamar `tracker.set_saved_fields()` justo después de que Django corrija `_state.adding`.
+
+Se importa como side-effect desde `models/__init__.py` (`from . import _field_tracker_patch  # noqa: F401`)
+— se aplica una sola vez, al importar el paquete, antes de que cualquier modelo real ejecute una query. Ver
+`tests/test_field_tracker_patch.py` — usa el `FieldTracker` real de `model_utils` (no uno fake, a
+diferencia de `tests/test_constraints_pure.py::CheckFlowStatusConstraintTests`) contra un modelo `BaseV3`
+real, incluyendo el escenario end-to-end (`initial_statuses` rechazado incluso cuando el campo solo se
+setea en el constructor) y el resync tras `from_db`.
+
+## Guard `BaseModel` en `get_extra_restriction` (FK/O2O)
+
+`fields/foreign_key.py::ForeignKey.get_extra_restriction` y
+`fields/one_to_one.py::OneToOneField.get_extra_restriction` agregan un `IsNull(RawSQL('{alias}.deleted_at'
+...))` para que los joins excluyan filas soft-deleted. Eso solo tiene sentido si **ambos** lados de la
+relación son `BaseModel` (safedelete) — `BaseV2`/`BaseV3` no tienen columna `deleted_at`. Antes de este
+guard, un `fields.ForeignKey`/`OneToOneField` desde o hacia un modelo `BaseV2`/`BaseV3` generaba SQL
+referenciando una columna inexistente en ese lado de la relación. El guard chequea `self.model` (dueño del
+campo) y `self.remote_field.model` (el destino) por separado — devuelve `None` (sin restricción) salvo que
+los dos sean `BaseModel`. No se puede determinar desde acá si el join va en sentido directo o inverso
+(Django invierte los alias al atravesar la relación en reversa), así que no alcanza con confiar en cuál de
+los dos alias (`alias`/`related_alias`) es cuál. Ver `tests/test_relation_fields.py` — no necesita tablas
+reales (`get_extra_restriction` solo arma una expresión SQL a partir del field estático, nunca ejecuta una
+query), cubre las 4 combinaciones `BaseModel`↔`BaseV3` para FK y O2O.
+
+## `register_model_signals` reconoce `BaseV3`
+
+`models/base.py::register_model_signals` iteraba `issubclass(_model, (BaseModel, BaseWithoutSafeDeleteModel))`
+para decidir si conectar los signals de `Meta.signals` de un modelo — un modelo concreto sobre `BaseV3` caía
+al `else`, y aunque `assert issubclass(_model, models.Model)` pasaba igual (`BaseV3` es `models.Model`), sus
+`Meta.signals` nunca se conectaban, en silencio. Ahora el tuple es `(BaseModel, BaseV2, BaseV3)` — usa
+`BaseV2` (no `BaseWithoutSafeDeleteModel`) porque es un `import` local que se re-ejecuta en cada llamada a
+la función; importar el nombre viejo dispararía el `DeprecationWarning` del shim en cada invocación, desde
+dentro de la propia librería. Ver `tests/test_register_model_signals.py` — usa `mock.patch('django.apps.apps.get_app_config', ...)`
+con un `_FakeAppConfig` en vez de un `AppConfig` real, porque el patrón `app_label='tests'` de este repo no
+registra una app instalada de verdad (`apps.get_app_config('tests')` fallaría).
 
 ## Bugs conocidos — documentar con tests, no arreglar sin que se pida
 

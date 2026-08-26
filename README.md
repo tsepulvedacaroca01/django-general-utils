@@ -118,14 +118,37 @@ defecto) a cualquier campo numérico.
 
 ### `BaseV3` (`models/base_v3.py`)
 
-Igual que `BaseV2` pero sobre `UUIDModelV3` en vez de `UUIDModelV2` — hereda todo lo de esa sección (uuid7,
-`id_as_code` como columna real, `ordering = ('-uuid',)`). Reutiliza el mismo metaclass (`ModelBaseV2Meta`)
-y el mismo manager (`BaseV2Manager`, `models/managers/base_v2.py`) que `BaseV2` — ninguno de los dos
-depende de qué `UUIDModelV*` se mezcle. No tiene nombre anterior; es la clase nueva de esta sesión.
+Igual que `BaseV2` pero sobre `UUIDModelV3` en vez de `UUIDModelV2` — hereda uuid7 e `id_as_code` como
+columna real de esa sección. Reutiliza el mismo metaclass (`ModelBaseV2Meta`) y el mismo manager
+(`BaseV2Manager`, `models/managers/base_v2.py`) que `BaseV2` — ninguno de los dos depende de qué
+`UUIDModelV*` se mezcle. No tiene nombre anterior; es la clase nueva de esta sesión.
+
+> **`ordering` es `-created_at`, no `-uuid`** — a diferencia de `UUIDModelV3` (que sí usa `-uuid` por
+> default). Hay dos razones, no solo compatibilidad de API:
+> - Los proyectos que migran de `BaseV2` a `BaseV3` típicamente tienen filas viejas con PK `uuid4`
+>   (aleatoria) conviviendo con filas nuevas en `uuid7` (time-ordered) — bajo `-uuid`, las filas viejas
+>   quedan en un orden efectivamente aleatorio (uuid4 no codifica tiempo), aunque las nuevas sí ordenen
+>   bien; solo tiene sentido ordenar por `-uuid` en un modelo que nace 100% en `uuid7`, sin datos
+>   heredados. `-created_at` es correcto para ambos casos por igual.
+> - Cambiar el default silenciosamente al pisar `BaseV2` → `BaseV3` también sería una regresión de
+>   comportamiento visible (API, listados) para quien ya consume esos endpoints.
+>
+> `created_at` (`UUIDModelV2`, heredado por `UUIDModelV3`/`BaseV3`) tiene `db_index=True` explícito —
+> sin eso, `AutoCreatedField` no indexa la columna por default y `ORDER BY created_at DESC` sería un sort
+> completo en cada query. Con el índice, `-created_at` es prácticamente tan eficiente como `-uuid` (que
+> reusa el índice de la propia PK) sin el problema de correctitud del punto anterior.
 
 > Si tu modelo concreto define su propio `Meta`, tiene que heredar del `Meta` de `BaseV2`/`BaseV3`
 > (`class Meta(BaseV3.Meta): ...`) para conservar el `ordering` — Django no combina automáticamente el
 > `Meta` de una clase abstracta con un `Meta` nuevo que no lo subclasea.
+
+> **`FieldTracker` y PKs `uuid7`**: el paquete parchea `model_utils.FieldTracker` al importarse
+> (`models/_field_tracker_patch.py`) para que distinga correctamente instancias nuevas de instancias
+> cargadas desde la base cuando la PK ya viene asignada al construirse en memoria (como `uuid7` en
+> `BaseV2`/`BaseV3`) — sin el parche, `tracker.has_changed()`/`tracker.previous()` daban resultados
+> incorrectos para instancias recién construidas (afecta directamente a `CheckFlowStatusConstraint`, que
+> depende de eso para distinguir el estado inicial de una transición). Se aplica automáticamente, no
+> requiere nada del lado del proyecto consumidor.
 
 ## Managers y querysets
 
@@ -141,7 +164,7 @@ Ambas familias (`base` con safedelete y `base_without_safe_delete` sin él) expo
 
 | Campo | Qué hace |
 |---|---|
-| `ForeignKey` / `OneToOneField` | Excluyen automáticamente relaciones hacia filas soft-deleted (salvo en `/admin/`) |
+| `ForeignKey` / `OneToOneField` | Excluyen automáticamente relaciones hacia filas soft-deleted (salvo en `/admin/`) — solo cuando **ambos lados** de la relación son `BaseModel`; usarlos entre modelos `BaseV2`/`BaseV3` (sin `deleted_at`) funciona igual pero sin esa restricción |
 | `AdvancedCharField` | `to_upper`/`to_lower`/`to_title` (excluyentes) + `left_strip`/`right_strip`/`strip` en `get_prep_value` |
 | `FloatField` / `IntegerField` / `PositiveIntegerField` | Igual que sus equivalentes de Django + métodos `get_<campo>_format_decimal/currency()` |
 | `JSONSchemaField` | `JSONField` que valida contra un JSON Schema (`schema=<archivo>`, relativo al módulo del modelo) |

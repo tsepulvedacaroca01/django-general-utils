@@ -100,11 +100,28 @@ class MyModelTests(unittest.TestCase):
 
 Ver `tests/test_uuid_v2.py` y `tests/test_bulk_create.py` como plantilla.
 
+**`BaseModel` es la excepción al patrón `app_label='tests'`**: su metaclass (`ModelBaseMeta`) agrega
+`HistoricalRecords()` automáticamente, y `django-simple-history` necesita `apps.app_configs[app_label]` —
+un `AppConfig` **real y registrado** — para resolver dónde poner el modelo histórico dinámico que genera.
+`'tests'` no es una app instalada de verdad (es solo la convención de `app_label` que usan
+`UUIDModelV2`/`UUIDModelV3`/`BaseV2`/`BaseV3`, que no tienen ese requisito), así que un `BaseModel`
+concreto con `app_label='tests'` explota con `KeyError: 'tests'` al definirse. Usar `app_label='auth'` (o
+cualquier otra app real ya en `INSTALLED_APPS`) en su lugar — Django no exige que el modelo pertenezca
+lógicamente a esa app, solo que el label resuelva a un `AppConfig` real. Ver
+`tests/test_relation_fields.py` (primer y único lugar del repo, al momento de escribir esto, que define un
+`BaseModel` concreto).
+
 Los `management/commands/` (ver `django_general_utils/management/commands/sync_id_as_code.py`) se testean
 igual: sin invocar el comando completo contra un registro global de modelos (`apps.get_models()`/
 `apps.all_models` verían también los modelos "de usar y tirar" de otros archivos de test si corren en el
 mismo proceso), sino importando y testeando directamente las funciones puras que el comando expone a nivel
 de módulo, contra el modelo concreto propio del archivo. Ver `tests/test_sync_id_as_code_command.py`.
+
+Código de producción que necesita `apps.get_app_config(app_name)` (ej. `register_model_signals`) tiene el
+mismo problema en sentido inverso: no hay una app real para pasarle. Se testea con
+`mock.patch('django.apps.apps.get_app_config', return_value=_FakeAppConfig([...]))` — un doble mínimo con
+un `.get_models()` que devuelve la lista de modelos "de usar y tirar" del test, en vez de intentar registrar
+una `AppConfig` real. Ver `tests/test_register_model_signals.py`.
 
 Si el modelo de prueba hereda `created_by`/`updated_by` (vienen de `UUIDModelV2`), hay que migrar
 `contenttypes` y `auth` primero, porque esas FKs apuntan a `auth.User` por defecto:
@@ -179,3 +196,10 @@ docker-compose -f docker-compose.dev.yml run --rm app-django-django-general-util
 docker-compose -f docker-compose.dev.yml run --rm app-django-django-general-utils-dev \
     bash -c "uv run ruff check ."
 ```
+
+`docker-compose run` reinstala el paquete local (`uv sync`) en cada invocación porque el bind mount pisa
+`/usr/src/app` con el código actual — normalmente rápido (todo ya en el venv de `/opt/venv`), pero si la
+red del host/Docker está caída, ese paso falla intentando resolver `build-system.requires` contra PyPI
+aunque no haya cambiado ninguna dependencia real. Agregar `--no-sync` a `uv run` (`uv run --no-sync pytest
+...` / `uv run --no-sync ruff check .`) salta ese paso y corre directo contra lo que ya está instalado en
+`/opt/venv` — funciona sin red mientras no se haya tocado `pyproject.toml`/`uv.lock`.

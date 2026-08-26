@@ -91,8 +91,11 @@ class BaseV3Tests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             BaseV3TestModel.objects.create(name='x' * 100)
 
-    def test_ordering_is_by_uuid(self):
-        self.assertEqual(BaseV3TestModel._meta.ordering, ('-uuid',))
+    def test_ordering_is_by_created_at(self):
+        # BaseV3 deliberately keeps `-created_at` (like BaseV2) instead of `-uuid` (unlike
+        # UUIDModelV3's own default): consumer projects already migrating BaseV2 -> BaseV3
+        # shouldn't see their default API/queryset ordering silently change underneath them.
+        self.assertEqual(BaseV3TestModel._meta.ordering, ('-created_at',))
 
     def test_metaclass_adds_formatted_number_helpers(self):
         instance = BaseV3TestModel.objects.create(name='first', price=1234.5)

@@ -86,6 +86,15 @@ class UUIDModelV3Tests(unittest.TestCase):
     def setUp(self):
         UUIDModelV3TestModel.objects.all().delete()
 
+    def test_default_ordering_is_by_uuid(self):
+        # UUIDModelV3's own default is `-uuid` (time-ordered PK, reuses its own index) — unlike
+        # BaseV3, which deliberately overrides this back to `-created_at` (see
+        # tests/test_base_v3.py::test_ordering_is_by_created_at) because BaseV3 is meant for
+        # models migrating from BaseV2/uuid4 with legacy rows, where `-uuid` would sort those old
+        # rows effectively at random. A model built directly on UUIDModelV3 (no legacy uuid4
+        # data) doesn't have that problem, so it keeps the more efficient default.
+        self.assertEqual(UUIDModelV3._meta.ordering, ('-uuid',))
+
     def test_uuid_pk_is_version_7(self):
         instance = UUIDModelV3TestModel.objects.create(name='first')
 

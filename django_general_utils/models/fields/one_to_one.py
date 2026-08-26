@@ -1,6 +1,6 @@
 from django.db import models
 from django.db.models.expressions import RawSQL
-from django.db.models.fields.related_descriptors import ReverseOneToOneDescriptor, ForwardOneToOneDescriptor
+from django.db.models.fields.related_descriptors import ForwardOneToOneDescriptor, ReverseOneToOneDescriptor
 from django.db.models.lookups import IsNull
 from django_middleware_global_request import get_request
 from safedelete.config import FIELD_NAME
@@ -76,6 +76,18 @@ class OneToOneField(models.OneToOneField):
         request = get_request()
 
         if request is not None and request.path.startswith('/admin/'):
+            return None
+
+        from ..base import BaseModel
+
+        # Ver comentario equivalente en foreign_key.py::ForeignKey.get_extra_restriction — solo
+        # se agrega la restricción cuando AMBOS lados de la relación siguen siendo BaseModel.
+        related_model = self.remote_field.model
+
+        if not (isinstance(related_model, type) and issubclass(related_model, BaseModel)):
+            return None
+
+        if not issubclass(self.model, BaseModel):
             return None
 
         return IsNull(

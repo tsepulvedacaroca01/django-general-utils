@@ -1,10 +1,11 @@
 from functools import partialmethod
 from typing import get_type_hints
-from django.db.models.signals import m2m_changed
+
 from django.db import models
-from django.db.models import Case, When, Value, BooleanField, TextField
+from django.db.models import BooleanField, Case, TextField, Value, When
 from django.db.models.base import ModelBase
 from django.db.models.functions import Now
+from django.db.models.signals import m2m_changed
 from django.utils.functional import cached_property
 from django.utils.translation import gettext_lazy as _
 from model_utils import FieldTracker
@@ -14,29 +15,33 @@ from safedelete import SOFT_DELETE_CASCADE
 from safedelete.config import FIELD_NAME
 from safedelete.models import SafeDeleteModel
 
+from ..models import fields
+from ..models.constraints import UniqueConstraint
+from ..utils.formats import format_currency, format_decimal
+from ..utils.image.blur_img_to_base64 import DEFAULT_BLUR_CODE, blur_img_to_base64
 from .managers.base import BaseModelManager
 from .querysets.base import BaseModelQuerySet
 from .simple_history import HistoricalRecords
 from .uuid import UUIDModel
-from ..models import fields
-from ..models.constraints import UniqueConstraint
-from ..utils.formats import format_currency, format_decimal
-from ..utils.image.blur_img_to_base64 import blur_img_to_base64, DEFAULT_BLUR_CODE
 
 
 def register_model_signals(app_name: str):
     from django.apps import apps
-    from .base_without_safe_delete import BaseWithoutSafeDeleteModel
+
+    from .base_v2 import BaseV2
+    from .base_v3 import BaseV3
 
     app_config = apps.get_app_config(app_name)
 
     for _model in app_config.get_models():
-        if issubclass(_model, (BaseModel, BaseWithoutSafeDeleteModel)):
+        if issubclass(_model, (BaseModel, BaseV2, BaseV3)):
             for _signal in _model._signals:
                 _signal.set_model(_model)
                 _signal.register()
         else:
-            assert issubclass(_model, models.Model), _('Model "%s" is not a subclass of BaseModel or BaseWithoutSafeDeleteModel') % _model.__name__
+            assert issubclass(_model, models.Model), (
+                _('Model "%s" is not a subclass of BaseModel, BaseV2 or BaseV3') % _model.__name__
+            )
 
     return None
 
@@ -141,8 +146,8 @@ class ModelBaseMeta(ModelBase):
         AGREGA LOS CAMPOS DE IMAGEN PARA AGREGAR SU VERSIÓN BORROSA
         @return:
         """
-        fields = getattr(model_class, '_images_field_to_blur')
-        suffix = getattr(model_class, '_suffix_blur_code')
+        fields = model_class._images_field_to_blur
+        suffix = model_class._suffix_blur_code
 
         for _field in fields:
             model_class.add_to_class(

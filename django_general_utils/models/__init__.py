@@ -1,4 +1,5 @@
 from ..utils.deprecation import deprecated_alias
+from . import _field_tracker_patch  # noqa: F401 — aplica el parche al importar el paquete
 from .base import BaseModel, SignalRegister
 from .base_v2 import BaseV2
 from .base_v3 import BaseV3
