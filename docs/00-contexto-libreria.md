@@ -108,8 +108,18 @@ un `AppConfig` **real y registrado** — para resolver dónde poner el modelo hi
 concreto con `app_label='tests'` explota con `KeyError: 'tests'` al definirse. Usar `app_label='auth'` (o
 cualquier otra app real ya en `INSTALLED_APPS`) en su lugar — Django no exige que el modelo pertenezca
 lógicamente a esa app, solo que el label resuelva a un `AppConfig` real. Ver
-`tests/test_relation_fields.py` (primer y único lugar del repo, al momento de escribir esto, que define un
-`BaseModel` concreto).
+`tests/test_relation_fields.py` (primer lugar del repo que definió un `BaseModel` concreto).
+
+**Segunda razón, independiente de `BaseModel`, para necesitar `app_label='auth'`**: cualquier modelo
+de test que necesite resolver una relación **reversa** por string en el ORM (`Count('related_name',
+...)`, `.filter(related_name__x=...)`, `Prefetch('related_name', ...)`) falla en silencio con
+`FieldError: Cannot resolve keyword '<related_name>' into field` bajo `app_label='tests'` —
+`apps.get_models()` (que Django usa para construir el árbol de relaciones inversas de cada modelo)
+ignora los modelos sin `AppConfig` real, la misma razón por la que `sync_id_as_code` usa
+`apps.all_models` en vez de `apps.get_models()`. El acceso Python directo (`instancia.related_name.all()`)
+sigue funcionando igual — el descriptor lo crea `ForeignKey.contribute_to_class` de forma síncrona —
+solo la resolución por *string* se ve afectada. Mismo fix: `app_label='auth'`. Ver
+`tests/test_eager_loading.py`, que necesita esto para su modelo `Book`/`Chapter` (`related_name='chapters'`).
 
 Los `management/commands/` (ver `django_general_utils/management/commands/sync_id_as_code.py`) se testean
 igual: sin invocar el comando completo contra un registro global de modelos (`apps.get_models()`/

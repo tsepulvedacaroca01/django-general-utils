@@ -215,6 +215,66 @@ dentro de la propia librería. Ver `tests/test_register_model_signals.py` — us
 con un `_FakeAppConfig` en vez de un `AppConfig` real, porque el patrón `app_label='tests'` de este repo no
 registra una app instalada de verdad (`apps.get_app_config('tests')` fallaría).
 
+## `utils/drf/eager_loading.py` — select_related/prefetch_related/select_properties automáticos
+
+Migrado desde un proyecto consumidor (GMS) tras validarlo ahí en 5 ViewSets/AjaxDatatableView reales,
+encontrando y corrigiendo 4 bugs de N+1 ya en producción en el proceso. Expone:
+
+- `build_eager_queryset(queryset, serializer_class, query=None)` — deriva `select_related`/
+  `prefetch_related`/`select_properties` introspectando `serializer_class._declared_fields`. Solo
+  reconoce relaciones declaradas como `NestedPrimaryKeyRelatedField`/`LazyRefSerializerField`
+  (`utils/drf/fields/`) — un `PrimaryKeyRelatedField` implícito de DRF (pk-only) no necesita
+  optimizarse: `use_pk_only_optimization()` devuelve `True` por default y nunca dispara una query
+  extra por sí solo. `query` es un dict ya normalizado vía
+  `django_restql.mixins.EagerLoadingMixin.get_dict_parsed_restql_query` (`None` = incluir todo).
+- `AutoEagerLoadingMixin` — mixin de ViewSet. Sobreescribe `get_queryset()` para aplicar eager
+  loading automáticamente sobre lo que resuelva `super().get_queryset()` (por eso debe ir **antes**
+  de `GenericViewSet`/`mixins.*ModelMixin` en la herencia); expone `get_eager_queryset(qs)` para
+  vistas con su propio `get_queryset()` (filtros de búsqueda, etc.) que solo necesitan aplicar el
+  eager loading al final.
+- `eager_relations_from_column_defs(model, column_defs)` + `AutoEagerLoadingAjaxDatatableMixin` —
+  el mismo mecanismo para `django-ajax-datatable`, que no tiene serializer: deriva `select_related`
+  de `get_column_defs()` (`foreign_field` o el `name` de la columna cuando coincide con el campo del
+  modelo). Reusa `self.column_specs` (ya calculado por `initialize()` en `dispatch()`) en vez de
+  volver a llamar `get_column_defs()` — llamarlo dos veces duplica sus propias queries de choices.
+
+### Por qué no es 100% automático — dos escape hatches deliberados
+
+`select_properties()` (queryable_properties) rechaza rutas con `relation_path` ("Cannot select
+properties on related models.") — no hay forma de anotar un `@queryable_property` de un modelo
+relacionado sobre un JOIN de `select_related`. Cuando el serializer/columna anidado necesita uno,
+`build_eager_queryset` degrada esa relación de `select_related` a
+`Prefetch(field, queryset=Modelo.objects.select_properties(...))` automáticamente — verificado que
+`Prefetch` funciona igual sobre relaciones forward (to-one), no solo reverse/M2M, y que el annotate
+cachea correctamente en la instancia anidada.
+
+Para `AjaxDatatableView` este mismo caso **no se puede derivar** solo — no existe nada equivalente a
+`Meta.fields` de un serializer que diga qué `@queryable_property` usa `customize_row()`. Se declara a
+mano: `eager_loading_select_properties = {'relacion': ['propiedad']}`. Y como `get_column_defs()`
+solo expone relaciones de columnas buscables/filtrables (`foreign_field` o nombre coincidente), una
+relación usada en `customize_row()` sin columna propia (ej. `searchable: False` con un `name` que no
+coincide con el campo real) es invisible — se declara con `eager_loading_relations = ['relacion']`.
+Ambos son el mismo tipo de límite que un `SerializerMethodField`: código imperativo, no
+introspectable — la diferencia es que estos dos sí son casos reales encontrados al migrar esto
+(`tests/test_eager_loading.py` los cubre con datos, no solo la derivación en abstracto).
+
+### Gotcha de testing encontrado acá: relaciones reversas y `app_label='tests'`
+
+`tests/test_eager_loading.py` es el único archivo de este repo (al momento de escribirlo) que
+necesita resolver una relación **reversa** por string (`Count('chapters', ...)`, `Prefetch('chapters',
+...)`). Con `app_label='tests'` (el patrón usado en el resto del repo) esto falla en silencio con
+`FieldError: Cannot resolve keyword 'chapters' into field` — `apps.get_models()` (que Django usa
+internamente para construir el árbol de relaciones inversas de cada modelo) **ignora** los modelos
+registrados bajo un `app_label` sin `AppConfig` real, exactamente la misma razón por la que
+`sync_id_as_code` usa `apps.all_models` en vez de `apps.get_models()` (ver sección de ese comando más
+arriba). El acceso Python directo (`libro.chapters.all()`) sigue funcionando igual — el descriptor lo
+crea `ForeignKey.contribute_to_class` de forma síncrona — solo la resolución por **string** en el ORM
+(`Count`, `.filter()`, `Prefetch` por nombre) se ve afectada. Solución: usar `app_label='auth'` (o
+cualquier otra app real de `INSTALLED_APPS`) para cualquier modelo de test que necesite una relación
+reversa resoluble por ORM — mismo fix que `test_relation_fields.py` ya usaba por una razón distinta
+(`HistoricalRecords` de `BaseModel`). Aplica a cualquier futuro test de este repo con el mismo
+requisito, no solo a `eager_loading`.
+
 ## Bugs conocidos — documentar con tests, no arreglar sin que se pida
 
 Estos ya están confirmados leyendo el código fuente (no son sospechas). Si el usuario pide "agregar tests"
