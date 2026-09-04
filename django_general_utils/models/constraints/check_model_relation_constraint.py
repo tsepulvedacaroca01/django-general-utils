@@ -36,7 +36,17 @@ class CheckModelRelationConstraint(BaseConstraint):
         return None
 
     def create_sql(self, model, schema_editor):
-        return None
+        # No es un constraint real de DB (se valida en Python, ver `validate()` abajo), así que no
+        # hay DDL que generar. `None` es seguro en la mayoría de los call sites de Django
+        # (`add_constraint()`/`table_sql()` en su rama sin params filtran con `if sql:`), PERO
+        # `BaseDatabaseSchemaEditor.table_sql()` tiene una rama distinta — activada cuando la tabla
+        # tiene una columna con parámetros propios en su definición, ej. un `GeneratedField` con
+        # `expression=SearchVector(..., config='spanish')` — que hace
+        # `self.deferred_sql.append(constraint.create_sql(model, self))` SIN filtrar por
+        # truthiness. Un `None` ahí queda en `deferred_sql` tal cual, y `execute()` lo convierte a
+        # `str(None)` = `'None'`, un `ProgrammingError` de sintaxis al ejecutarse. `'SELECT 1'` es
+        # el no-op estándar: válido en cualquier contexto DDL, sin efecto sobre el schema.
+        return 'SELECT 1'
 
     def remove_sql(self, model, schema_editor):
         return None
