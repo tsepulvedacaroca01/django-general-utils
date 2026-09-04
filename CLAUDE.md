@@ -275,6 +275,48 @@ reversa resoluble por ORM — mismo fix que `test_relation_fields.py` ya usaba p
 (`HistoricalRecords` de `BaseModel`). Aplica a cualquier futuro test de este repo con el mismo
 requisito, no solo a `eager_loading`.
 
+## `CheckModelRelationConstraint.create_sql()` — ya no devuelve `None` (Django 5+/`GeneratedField`)
+
+`CheckModelRelationConstraint` no es un constraint real de DB — se valida en Python (`validate()`),
+así que sus tres hooks de DDL (`constraint_sql`/`create_sql`/`remove_sql`) legítimamente no tienen
+SQL que generar. Los tres devolvían `None`. Eso es seguro en casi todos los call sites de Django
+porque filtran por truthiness antes de usarlo: `add_constraint()`/`remove_constraint()`
+(`if sql: self.execute(sql)`) y la rama "sin params" de `table_sql()` (`", ".join(str(s) for s in
+(...) if s)`).
+
+**Excepción encontrada en Django 6.0.7** (consumidor real: gms-django agregando un campo
+`GeneratedField(expression=SearchVector(...))` a un modelo que ya tenía
+`CheckModelRelationConstraint` en `Meta.constraints`): `BaseDatabaseSchemaEditor.table_sql()` tiene
+una segunda rama, activada cuando la tabla tiene **al menos una columna cuya definición requiere
+parámetros propios** (un `GeneratedField`/`db_default`, ambos de Django 5.0+, con un literal
+embebido en la expresión — ej. el `config='spanish'` de `SearchVector`). Esa rama hace:
+
+```python
+if params:
+    for constraint in model._meta.constraints:
+        self.deferred_sql.append(constraint.create_sql(model, self))  # sin filtrar por truthiness
+```
+
+Un `None` ahí queda tal cual en `deferred_sql`, y al ejecutarse (`BaseDatabaseSchemaEditor.execute()`
+hace `sql = str(sql)`) se convierte en el string `'None'` — `ProgrammingError: syntax error at or
+near "None"`. Solo se dispara al crear la tabla **desde cero** (`sync_apps`/`--no-migrations` de
+pytest-django, o una migración `CreateModel` sobre una tabla nueva) en un modelo que combina ambos
+ingredientes: una columna con parámetros propios + al menos un `CheckModelRelationConstraint`.
+
+**Fix:** `create_sql()` devuelve `'SELECT 1'` (no-op válido en cualquier contexto DDL de Postgres/
+cualquier backend) en vez de `None`. `constraint_sql()`/`remove_sql()` quedan sin cambios — sus call
+sites sí filtran correctamente.
+
+**Por qué no hay test de integración end-to-end para esto en este repo:** el campo (Django 4.2.30,
+la versión que resuelve el `uv.lock` de este repo dentro del rango declarado `Django>=4.2.4,<=6.0.7`)
+no tiene la rama vulnerable — su `table_sql()` solo conoce el camino `constraint_sql()` inline,
+filtrado por truthiness, sin ninguna rama `if params:`/`deferred_sql.append(create_sql(...))` — y
+tampoco existe `models.GeneratedField` antes de Django 5.0. Reproducir el escenario real requeriría
+correr los tests contra Django 5+, lo que este repo no hace hoy (ver `pyproject.toml`/`uv.lock` para
+la versión resuelta actual). `tests/test_constraints_pure.py::CheckModelRelationConstraintTests`
+cubre el fix con tests puros (verifica el valor de retorno de cada hook), que sí corren en cualquier
+versión de Django del rango soportado.
+
 ## Bugs conocidos — documentar con tests, no arreglar sin que se pida
 
 Estos ya están confirmados leyendo el código fuente (no son sospechas). Si el usuario pide "agregar tests"

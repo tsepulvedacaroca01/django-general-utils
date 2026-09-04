@@ -73,6 +73,30 @@ class CheckModelRelationConstraintTests(unittest.TestCase):
     opposite of the common "True == valid" convention.
     """
 
+    def test_constraint_sql_is_none(self):
+        # Not a real DB constraint — validated in Python via validate() below. Safe as None here:
+        # every call site of constraint_sql() filters by truthiness before using it.
+        constraint = CheckModelRelationConstraint(name='c', check=lambda instance: False)
+
+        self.assertIsNone(constraint.constraint_sql(model=None, schema_editor=None))
+
+    def test_create_sql_is_a_noop_statement_not_none(self):
+        # Regression: BaseDatabaseSchemaEditor.table_sql() (Django 5+, a table with a column that
+        # needs its own params — e.g. a GeneratedField/db_default) appends create_sql()'s return
+        # value straight into deferred_sql with no truthiness filter. A bare None there stringifies
+        # to "None" at execute() time and raises a syntax error. See CLAUDE.md §
+        # "CheckModelRelationConstraint.create_sql() — ya no devuelve None" for the full story —
+        # this repo's own Django (4.2.30) doesn't have that branch, so this can only be a pure test.
+        constraint = CheckModelRelationConstraint(name='c', check=lambda instance: False)
+
+        self.assertEqual(constraint.create_sql(model=None, schema_editor=None), 'SELECT 1')
+
+    def test_remove_sql_is_none(self):
+        # remove_constraint() filters by truthiness (`if sql: self.execute(sql)`), so None is safe.
+        constraint = CheckModelRelationConstraint(name='c', check=lambda instance: False)
+
+        self.assertIsNone(constraint.remove_sql(model=None, schema_editor=None))
+
     def test_check_none_is_required(self):
         constraint = CheckModelRelationConstraint(name='c', check=None)
 
