@@ -104,7 +104,13 @@ def _queryable_property_names(model, serializer_class, query: dict) -> list[str]
     declared_fields = getattr(serializer_class, '_declared_fields', {})
     names = []
 
-    for field_name in getattr(serializer_class.Meta, 'fields', ()):
+    # A plain `serializers.Serializer` (as opposed to `ModelSerializer`) -- the common shape
+    # for an action-specific serializer that isn't a 1:1 model representation (e.g. a download/
+    # export endpoint) -- has no `Meta` at all, not just an empty one. `getattr(..., 'fields', ())`
+    # only guards a `Meta` without `.fields`; accessing `.Meta` itself still raises AttributeError.
+    meta = getattr(serializer_class, 'Meta', None)
+
+    for field_name in getattr(meta, 'fields', ()):
         if field_name in declared_fields or _query_node(query, field_name) is False:
             continue
 

@@ -317,6 +317,19 @@ class LocationSerializer(DynamicFieldsMixin, serializers.ModelSerializer):
         fields = ('pk', 'code', 'warehouse_name')
 
 
+class BookDownloadSerializer(DynamicFieldsMixin, serializers.Serializer):
+    """
+    Regression fixture: a plain `serializers.Serializer` (not `ModelSerializer`) for an
+    action-specific endpoint (e.g. a download/export action) that isn't a 1:1 model
+    representation -- has no `Meta` at all, unlike every other fixture in this file.
+    """
+    book = serializers.PrimaryKeyRelatedField(queryset=Book.objects.all(), required=True)
+    file_name = serializers.SerializerMethodField()
+
+    def get_file_name(self, instance) -> str:
+        return 'export.xlsx'
+
+
 class _SchemaBackedTestCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -496,6 +509,20 @@ class BuildEagerQuerysetTests(_SchemaBackedTestCase):
 
         self.assertEqual(len(fetched), 1)
 
+    def test_plain_serializer_without_meta_does_not_crash(self):
+        # Regression: a plain `serializers.Serializer` (no `Meta` at all --
+        # the common shape for an action-specific download/export endpoint
+        # that isn't a 1:1 model representation) crashed with
+        # `AttributeError: type object '...' has no attribute 'Meta'` as soon
+        # as _queryable_property_names accessed `serializer_class.Meta`
+        # directly. Real case: ProductStockHistoryDownloadSerializer in a
+        # consuming project, hit via AutoEagerLoadingMixin.get_queryset().
+        qs = build_eager_queryset(Book.objects.all(), BookDownloadSerializer)
+
+        fetched = list(qs)
+
+        self.assertEqual(fetched, [])
+
     def test_plain_many_related_field_still_uses_prefetch_related(self):
         # Same "no nested serializer class" shape as the to-one case above,
         # but `many=True` -- must still go through Prefetch (accessing
@@ -640,6 +667,20 @@ class AutoEagerLoadingMixinTests(_SchemaBackedTestCase):
         qs = view.get_eager_queryset(Book.objects.filter(title__icontains='a'))
 
         self.assertIn('author', qs.query.select_related)
+
+    def test_get_queryset_with_meta_less_serializer_does_not_crash(self):
+        # End-to-end version of test_plain_serializer_without_meta_does_not_crash: the real
+        # crash happened through this exact call chain (ViewSet.get_queryset() ->
+        # AutoEagerLoadingMixin.get_queryset() -> get_eager_queryset() -> build_eager_queryset()),
+        # for a `get_serializer_class()` that returns a plain Serializer for one action (e.g. a
+        # detail-route download action) while the ViewSet's model-bound `serializer_class` stays
+        # a normal ModelSerializer.
+        request = RequestFactory().get('/books/1/download/')
+        view = _FakeViewSet(request, BookDownloadSerializer, Book.objects.all())
+
+        qs = view.get_queryset()
+
+        self.assertEqual(list(qs), [])
 
 
 class _RawAjaxDatatableView:
