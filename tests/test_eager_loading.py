@@ -532,6 +532,27 @@ class EagerRelationsFromColumnDefsTests(_SchemaBackedTestCase):
 
         self.assertEqual(eager_relations_from_column_defs(Book, column_defs), [])
 
+    def test_column_named_after_fk_attname_resolves_to_real_relation_name(self):
+        # Regression: a column named after the FK's *attname* ('editor_id')
+        # used to be added to the result verbatim instead of resolved to the
+        # real relation name ('editor'). The base AjaxDatatableView's generic
+        # render does `getattr(instance, 'editor_id')` -- a local column, no
+        # query -- so this doesn't even need select_related, but when it WAS
+        # added, `select_related('editor_id')` blew up with FieldError since
+        # 'editor_id' isn't a real field/relation name.
+        column_defs = [{'name': 'editor_id'}]
+
+        self.assertEqual(eager_relations_from_column_defs(Chapter, column_defs), [])
+
+    def test_column_named_after_real_relation_name_still_detected(self):
+        # Same FK, but the column name matches the actual relation name
+        # ('editor', not 'editor_id') -- this is the case that genuinely
+        # needs select_related, since the generic render returns the related
+        # object itself.
+        column_defs = [{'name': 'editor'}]
+
+        self.assertEqual(eager_relations_from_column_defs(Chapter, column_defs), ['editor'])
+
 
 class _RawQuerysetView:
     """Stands in for the DRF GenericAPIView tail of the MRO: provides the
@@ -675,6 +696,30 @@ class AutoEagerLoadingAjaxDatatableMixinTests(_SchemaBackedTestCase):
 
         self.assertEqual(label, 'Jane (author)')
         self.assertEqual(len(ctx.captured_queries), 2)
+
+    def test_column_named_after_fk_attname_is_skipped_not_crashed(self):
+        # Mirrors test_plain_related_field_with_mismatched_name_is_skipped_not_crashed
+        # on the DRF side: a column named 'editor_id' must not be turned into
+        # select_related('editor_id') -- that's not a valid relation name and
+        # would raise FieldError as soon as the queryset is executed.
+        view = _FakeAjaxDatatableView(Chapter, Chapter.objects.all(), column_defs=[{'name': 'editor_id'}])
+
+        qs = view.get_initial_queryset(None)
+
+        self.assertEqual(qs.query.select_related, False)
+
+    def test_column_named_after_fk_attname_executes_without_error(self):
+        # Building the queryset alone doesn't validate field names -- only
+        # compiling/executing it does. The regression only shows up here.
+        book = Book.objects.create(title='A Book', author=Author.objects.create(name='Jane'))
+        Chapter.objects.create(title='Chapter 1', book=book)
+
+        view = _FakeAjaxDatatableView(Chapter, Chapter.objects.all(), column_defs=[{'name': 'editor_id'}])
+
+        qs = view.get_initial_queryset(None)
+        fetched = list(qs)
+
+        self.assertEqual(len(fetched), 1)
 
     def test_property_override_ignored_when_relation_not_actually_present(self):
         # eager_loading_select_properties references a relation that no

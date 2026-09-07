@@ -370,10 +370,23 @@ def eager_relations_from_column_defs(model, column_defs) -> list[str]:
         except FieldDoesNotExist:
             continue
 
-        if getattr(model_field, 'is_relation', False) and (
+        if not getattr(model_field, 'is_relation', False) or not (
             getattr(model_field, 'many_to_one', False) or getattr(model_field, 'one_to_one', False)
         ):
-            names.add(head)
+            continue
+
+        # A column named after the FK's *attname* (e.g. 'editor_id') renders the raw id via
+        # the base AjaxDatatableView's generic `getattr(instance, 'editor_id')` -- a local
+        # column already on the row, no query, no select_related needed (same reasoning as
+        # DRF's `use_pk_only_optimization()`, see `_collect_eager_spec` above). Only the real
+        # relation name ('editor') needs it, since that's what returns the related object.
+        # `Model._meta.get_field()` resolves both names to the same field, so without this
+        # check the raw attname string ('editor_id') got passed straight to `select_related()`
+        # and crashed with `FieldError` (the field's real name is 'editor', not 'editor_id').
+        if head == model_field.attname and head != model_field.name:
+            continue
+
+        names.add(model_field.name)
 
     return sorted(names)
 
