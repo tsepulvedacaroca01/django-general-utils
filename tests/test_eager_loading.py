@@ -127,7 +127,19 @@ class Location(BaseV3):
         db_table = 'test_el_location'
 
 
-_MODELS = (Country, Author, Book, Chapter, Review, Warehouse, Location)
+class Cover(BaseV3):
+    # The FK lives here, but the interesting side for eager_relations_from_column_defs is
+    # Book's *reverse* accessor ('cover') -- a `OneToOneRel`, which unlike a concrete field
+    # has no `attname`.
+    image_url = models.CharField(max_length=64, null=True, blank=True)
+    book = models.OneToOneField(Book, on_delete=models.CASCADE, related_name='cover')
+
+    class Meta(BaseV3.Meta):
+        app_label = 'auth'
+        db_table = 'test_el_cover'
+
+
+_MODELS = (Country, Author, Book, Chapter, Review, Warehouse, Location, Cover)
 
 
 # ---------------------------------------------------------------------------
@@ -569,6 +581,16 @@ class EagerRelationsFromColumnDefsTests(_SchemaBackedTestCase):
 
         self.assertEqual(eager_relations_from_column_defs(Chapter, column_defs), [])
 
+    def test_reverse_one_to_one_column_is_detected_without_crashing(self):
+        # Regression: a reverse one-to-one (`OneToOneRel`, e.g. Book.cover)
+        # has no `attname` at all -- only concrete fields on the FK-holding
+        # side do. The attname-skip check must default missing attname to
+        # None instead of a plain attribute access, or this raises
+        # AttributeError before it ever gets to select_related().
+        column_defs = [{'name': 'cover'}]
+
+        self.assertEqual(eager_relations_from_column_defs(Book, column_defs), ['cover'])
+
 
 class _RawQuerysetView:
     """Stands in for the DRF GenericAPIView tail of the MRO: provides the
@@ -736,6 +758,23 @@ class AutoEagerLoadingAjaxDatatableMixinTests(_SchemaBackedTestCase):
         fetched = list(qs)
 
         self.assertEqual(len(fetched), 1)
+
+    def test_reverse_one_to_one_column_executes_without_error(self):
+        # End-to-end version of test_reverse_one_to_one_column_is_detected_without_crashing:
+        # confirms get_initial_queryset() doesn't just build without raising, but that the
+        # resulting select_related('cover') actually executes -- a real case found in
+        # shipped-django (TransferLocation.work_order).
+        author = Author.objects.create(name='Jane')
+        book = Book.objects.create(title='A Book', author=author)
+        Cover.objects.create(book=book, image_url='cover.png')
+
+        view = _FakeAjaxDatatableView(Book, Book.objects.all(), column_defs=[{'name': 'cover'}])
+
+        qs = view.get_initial_queryset(None)
+        fetched = list(qs)
+
+        self.assertEqual(len(fetched), 1)
+        self.assertEqual(fetched[0].cover.image_url, 'cover.png')
 
     def test_property_override_ignored_when_relation_not_actually_present(self):
         # eager_loading_select_properties references a relation that no

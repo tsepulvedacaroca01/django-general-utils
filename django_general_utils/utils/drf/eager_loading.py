@@ -383,7 +383,12 @@ def eager_relations_from_column_defs(model, column_defs) -> list[str]:
         # `Model._meta.get_field()` resolves both names to the same field, so without this
         # check the raw attname string ('editor_id') got passed straight to `select_related()`
         # and crashed with `FieldError` (the field's real name is 'editor', not 'editor_id').
-        if head == model_field.attname and head != model_field.name:
+        # A reverse one-to-one (`OneToOneRel`, e.g. a `work_order` accessor on the model that
+        # doesn't hold the FK) has no `attname` at all -- only concrete fields on the FK-holding
+        # side do -- so this must default to `None` instead of a plain attribute access.
+        attname = getattr(model_field, 'attname', None)
+
+        if head == attname and head != model_field.name:
             continue
 
         names.add(model_field.name)
