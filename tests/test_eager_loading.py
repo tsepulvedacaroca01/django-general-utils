@@ -553,6 +553,22 @@ class EagerRelationsFromColumnDefsTests(_SchemaBackedTestCase):
 
         self.assertEqual(eager_relations_from_column_defs(Chapter, column_defs), ['editor'])
 
+    def test_foreign_field_matching_attname_is_skipped(self):
+        # Same bug, reached through the other entry point: `foreign_field`
+        # (not just `name`) can also be set to an FK's attname, e.g. a
+        # searchable column labeled 'editor_display' backed by
+        # foreign_field='editor_id'.
+        column_defs = [{'name': 'editor_display', 'foreign_field': 'editor_id'}]
+
+        self.assertEqual(eager_relations_from_column_defs(Chapter, column_defs), [])
+
+    def test_dotted_foreign_field_with_attname_head_is_skipped(self):
+        # `head` is only the first segment of a dotted foreign_field -- must
+        # be checked against attname/name the same way as the undotted case.
+        column_defs = [{'name': 'editor_display', 'foreign_field': 'editor_id__name'}]
+
+        self.assertEqual(eager_relations_from_column_defs(Chapter, column_defs), [])
+
 
 class _RawQuerysetView:
     """Stands in for the DRF GenericAPIView tail of the MRO: provides the
