@@ -202,6 +202,25 @@ def _collect_eager_spec(model, serializer_class, query: dict) -> tuple[list[str]
             if nested_serializer_class else []
         )
 
+        # A to-one field with no nested serializer class is a plain
+        # `serializers.PrimaryKeyRelatedField`/`RelatedField` — its
+        # `to_representation()` only ever needs `.pk`, and DRF's own
+        # `use_pk_only_optimization()` already reads that straight off the
+        # FK column (`Model.serializable_value(attname)`, no query) without
+        # any help from `select_related()`. Nothing to eager-load here.
+        # Skipping it also sidesteps a real bug: such a field is often
+        # explicitly named after the id it exposes (e.g. `template_id =
+        # PrimaryKeyRelatedField(source="template")`), and `field_name`
+        # ("template_id") would otherwise get passed straight to
+        # `select_related()`/used as a nested-path prefix below — Django
+        # rejects it with `FieldError: Invalid field name(s) given in
+        # select_related`, since the field's real name on the model is
+        # "template", not "template_id" (`Model._meta.get_field()` resolves
+        # "template_id" too, matching by attname, which is why this branch
+        # was reached at all).
+        if nested_serializer_class is None and is_to_one and not is_many:
+            continue
+
         if is_many or not is_to_one or own_props:
             related_qs = related_model.objects.all()
 
@@ -210,16 +229,22 @@ def _collect_eager_spec(model, serializer_class, query: dict) -> tuple[list[str]
 
             prefetch_related.append(Prefetch(field_name, queryset=related_qs))
         else:
-            select_related.append(field_name)
+            # `model_field.name`, not `field_name`: by this point
+            # `nested_serializer_class` is set (the plain PK-only case was
+            # already skipped above), so `field_name` should already match
+            # the model's relation name by convention — using
+            # `model_field.name` here is defense in depth, a no-op in the
+            # normal case, for the same class of mismatch handled above.
+            select_related.append(model_field.name)
 
             if nested_serializer_class is not None:
                 nested_select, nested_prefetch, _nested_props = _collect_eager_spec(
                     related_model, nested_serializer_class, nested_query,
                 )
-                select_related.extend(f'{field_name}__{path}' for path in nested_select)
+                select_related.extend(f'{model_field.name}__{path}' for path in nested_select)
 
                 for prefetch in nested_prefetch:
-                    prefetch.add_prefix(field_name)
+                    prefetch.add_prefix(model_field.name)
                     prefetch_related.append(prefetch)
 
     select_related.extend(_dotted_source_relations(model, serializer_class, query))

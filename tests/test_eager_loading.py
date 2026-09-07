@@ -185,6 +185,40 @@ class ChapterSerializer(DynamicFieldsMixin, serializers.ModelSerializer):
         fields = ('pk', 'title', 'editor')
 
 
+class ChapterEditorIdSerializer(DynamicFieldsMixin, serializers.ModelSerializer):
+    """
+    Regression fixture: a plain `PrimaryKeyRelatedField` explicitly declared
+    under a name that matches the FK's *attname*, not its real relation name
+    (`editor_id` vs. `editor`) -- the common "expose just the id" pattern.
+    `Model._meta.get_field()` resolves "editor_id" too (it matches forward
+    FK/O2O fields by attname, not just by name), so this field used to reach
+    the to-one branch of `_collect_eager_spec` and get treated as a relation
+    to eager-load.
+    """
+
+    editor_id = serializers.PrimaryKeyRelatedField(source='editor', queryset=Author.objects.all())
+
+    class Meta:
+        model = Chapter
+        fields = ('pk', 'title', 'editor_id')
+
+
+class BookPlainReviewIdsSerializer(DynamicFieldsMixin, serializers.ModelSerializer):
+    """
+    A plain (non-nested) `PrimaryKeyRelatedField(many=True)` -- no
+    `get_serializer_class()`, same as the to-one case above, but this one
+    *does* need a `Prefetch` (accessing `.reviews.all()` to list the PKs
+    still costs a query per row without one). Confirms the "nothing to
+    eager-load" skip added for the to-one case doesn't over-fire here.
+    """
+
+    reviews = serializers.PrimaryKeyRelatedField(many=True, read_only=True)
+
+    class Meta:
+        model = Book
+        fields = ('pk', 'title', 'reviews')
+
+
 class BookSerializer(DynamicFieldsMixin, serializers.ModelSerializer):
     """
     The 'everything' serializer: a forward FK whose nested serializer needs a
@@ -423,6 +457,42 @@ class BuildEagerQuerysetTests(_SchemaBackedTestCase):
 
         self.assertEqual(qs.query.select_related, False)
         self.assertEqual(qs._prefetch_related_lookups, ())
+
+    def test_plain_related_field_with_mismatched_name_is_skipped_not_crashed(self):
+        # Regression: `editor_id` (source="editor") used to reach the to-one
+        # branch and get passed straight to `select_related()` as-is --
+        # Django raised `FieldError: Invalid field name(s) given in
+        # select_related` for "editor_id" (the model's real field is
+        # "editor"). A plain PrimaryKeyRelatedField never needs
+        # select_related in the first place (DRF's own pk-only optimization
+        # already avoids the extra query), so the fix is to skip it entirely.
+        qs = build_eager_queryset(Chapter.objects.all(), ChapterEditorIdSerializer)
+
+        self.assertEqual(qs.query.select_related, False)
+        self.assertEqual(qs._prefetch_related_lookups, ())
+
+    def test_plain_related_field_with_mismatched_name_executes_without_error(self):
+        author = Author.objects.create(name='Jane')
+        book = Book.objects.create(title='A Book', author=author)
+        Chapter.objects.create(title='Ch1', book=book, editor=author)
+
+        qs = build_eager_queryset(Chapter.objects.all(), ChapterEditorIdSerializer)
+
+        # Building the queryset alone doesn't validate field names -- only
+        # compiling/executing it does. The regression only shows up here.
+        fetched = list(qs)
+
+        self.assertEqual(len(fetched), 1)
+
+    def test_plain_many_related_field_still_uses_prefetch_related(self):
+        # Same "no nested serializer class" shape as the to-one case above,
+        # but `many=True` -- must still go through Prefetch (accessing
+        # `.reviews.all()` for the PK list costs a query per row otherwise),
+        # not get caught by the to-one skip.
+        qs = build_eager_queryset(Book.objects.all(), BookPlainReviewIdsSerializer)
+
+        lookups = {p.prefetch_through for p in qs._prefetch_related_lookups}
+        self.assertEqual(lookups, {'reviews'})
 
 
 class EagerRelationsFromColumnDefsTests(_SchemaBackedTestCase):

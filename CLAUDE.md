@@ -221,11 +221,16 @@ Migrado desde un proyecto consumidor (GMS) tras validarlo ahí en 5 ViewSets/Aja
 encontrando y corrigiendo 4 bugs de N+1 ya en producción en el proceso. Expone:
 
 - `build_eager_queryset(queryset, serializer_class, query=None)` — deriva `select_related`/
-  `prefetch_related`/`select_properties` introspectando `serializer_class._declared_fields`. Solo
-  reconoce relaciones declaradas como `NestedPrimaryKeyRelatedField`/`LazyRefSerializerField`
-  (`utils/drf/fields/`) — un `PrimaryKeyRelatedField` implícito de DRF (pk-only) no necesita
-  optimizarse: `use_pk_only_optimization()` devuelve `True` por default y nunca dispara una query
-  extra por sí solo. `query` es un dict ya normalizado vía
+  `prefetch_related`/`select_properties` introspectando `serializer_class._declared_fields`. Las
+  relaciones a-uno con anidamiento real (`NestedPrimaryKeyRelatedField`/`LazyRefSerializerField`,
+  `utils/drf/fields/`) resuelven `select_related`; cualquier otro campo a-uno **declarado
+  explícitamente** que resulte ser una relación (típicamente un `PrimaryKeyRelatedField` plano, sin
+  serializer anidado) se salta por completo — nunca necesitó optimizarse:
+  `use_pk_only_optimization()` ya lee el id crudo de la FK sin query propia. Un `PrimaryKeyRelatedField`
+  **implícito** (auto-generado por DRF para un FK listado en `Meta.fields` sin declararlo como
+  atributo) ni siquiera llega a `_declared_fields`, así que tampoco lo ve — incluirlo acá es solo para
+  no repetir la confusión que causó el bug de más abajo (`algo_id = PrimaryKeyRelatedField(source="algo")`).
+  `query` es un dict ya normalizado vía
   `django_restql.mixins.EagerLoadingMixin.get_dict_parsed_restql_query` (`None` = incluir todo).
 - `AutoEagerLoadingMixin` — mixin de ViewSet. Sobreescribe `get_queryset()` para aplicar eager
   loading automáticamente sobre lo que resuelva `super().get_queryset()` (por eso debe ir **antes**
@@ -237,6 +242,25 @@ encontrando y corrigiendo 4 bugs de N+1 ya en producción en el proceso. Expone:
   de `get_column_defs()` (`foreign_field` o el `name` de la columna cuando coincide con el campo del
   modelo). Reusa `self.column_specs` (ya calculado por `initialize()` en `dispatch()`) en vez de
   volver a llamar `get_column_defs()` — llamarlo dos veces duplica sus propias queries de choices.
+
+### Límite no resuelto: un M2M/relación reversa listada en `Meta.fields` sin declarar como atributo
+
+DRF auto-genera un `PrimaryKeyRelatedField(many=True)` para cualquier M2M/relación reversa que
+aparezca en `Meta.fields` sin un atributo de clase propio en el serializer — ese campo generado
+**nunca** aparece en `serializer_class._declared_fields` (que solo contiene lo que la clase declaró
+explícitamente), así que `_collect_eager_spec` no tiene forma de verlo. Encontrado real, dos veces,
+migrando esto: un `roles`/`permissions` M2M comentado como atributo pero presente en `Meta.fields`, y
+una relación reversa (`related_name`) expuesta de la misma forma. Sin `prefetch_related` manual, cada
+fila del listado dispara una query aparte para ese M2M — invisible con `grep`/lectura del serializer,
+porque literalmente no hay una línea que declare el campo.
+
+A diferencia del bug de `algo_id` de más abajo, esto **no es corregible dentro de esta librería** sin
+ampliar bastante el alcance de la introspección (habría que inspeccionar `Meta.fields` completo contra
+los campos M2M/reversos del modelo, no solo `_declared_fields`, con el riesgo de falsos positivos sobre
+relaciones que el serializer restringe a propósito). Mientras tanto: declarar el campo explícitamente
+en el serializer (`NestedPrimaryKeyRelatedField`/`LazyRefSerializerField`, que sí se ven), o agregar
+`prefetch_related("<campo>")` a mano en el `get_queryset()` del ViewSet consumidor junto al resto del
+eager loading — no es un caso de "no usar el mixin", es un complemento puntual.
 
 ### Por qué no es 100% automático — dos escape hatches deliberados
 
@@ -274,6 +298,44 @@ cualquier otra app real de `INSTALLED_APPS`) para cualquier modelo de test que n
 reversa resoluble por ORM — mismo fix que `test_relation_fields.py` ya usaba por una razón distinta
 (`HistoricalRecords` de `BaseModel`). Aplica a cualquier futuro test de este repo con el mismo
 requisito, no solo a `eager_loading`.
+
+### Bug real corregido en dos proyectos consumidores: `algo_id = PrimaryKeyRelatedField(source="algo")`
+
+`_collect_eager_spec` iteraba `serializer_class._declared_fields` y decidía si un campo era una
+relación consultando `model._meta.get_field(field_name)` — pero `field_name` es el nombre del
+**atributo del serializer**, no necesariamente el nombre real del campo en el modelo. Para un FK/O2O
+forward, Django's `_meta.get_field()` resuelve tanto por `name` ("template") como por `attname`
+("template_id") — así que un patrón común de DRF, exponer solo el id de una FK bajo un nombre propio
+(`template_id = serializers.PrimaryKeyRelatedField(source="template", ...)`), hacía que este campo
+**sí** entrara al branch de relación a-uno, y `select_related(field_name)` terminaba pidiendo
+`select_related("template_id")` — Django lo rechaza con `FieldError: Invalid field name(s) given in
+select_related: 'template_id'. Choices are: ..., template`, un 500 real en cualquier request que
+tocara esa vista (no algo que solo aparezca con N filas — la validación del nombre de campo ocurre al
+compilar la query, no al traer datos).
+
+Encontrado en producción en dos proyectos consumidores distintos que usan esta librería
+(`AutoEagerLoadingMixin` aplicado a ViewSets con este patrón de campo), reproducido y corregido acá.
+Fix de dos partes en `_collect_eager_spec`:
+
+1. **Un campo a-uno sin `nested_serializer_class` (i.e. un `PrimaryKeyRelatedField`/`RelatedField`
+   plano, no `NestedPrimaryKeyRelatedField`/`LazyRefSerializerField`) se salta por completo** — nunca
+   necesitó `select_related`: su `to_representation()` solo pide `.pk`, y
+   `RelatedField.use_pk_only_optimization()` ya lo resuelve leyendo `Model.serializable_value(attname)`
+   directo (sin query), pase lo que pase con `select_related`. Esto es lo que realmente evita el bug,
+   no solo lo enmascara.
+2. **Cuando sí hay `nested_serializer_class`** (así que el campo debe ser
+   `NestedPrimaryKeyRelatedField`/`LazyRefSerializerField`, que por convención de este repo siempre se
+   declaran con el mismo nombre que el campo del modelo), `select_related()`/el prefijo de rutas
+   anidadas usa `model_field.name`, no `field_name` — defensa en profundidad, no-op en el caso normal.
+
+`tests/test_eager_loading.py::BuildEagerQuerysetTests` tiene 3 tests de regresión
+(`test_plain_related_field_with_mismatched_name_*`, `test_plain_many_related_field_still_uses_prefetch_related`)
+— confirmados fallando (con el `FieldError` real) antes del fix, pasando después.
+
+**Para cualquier proyecto consumidor:** este fix vive en el commit que lo introduce; los proyectos
+que fijan una revisión de este repo en su `uv.lock` (`git = "...", rev/commit pinneado`) no lo reciben
+hasta que actualicen ese pin. Si un ViewSet con `AutoEagerLoadingMixin` sigue viendo este `FieldError`
+después de este fix, confirmar primero qué commit de `django-general-utils` tiene fijado el proyecto.
 
 ## `CheckModelRelationConstraint.create_sql()` — ya no devuelve `None` (Django 5+/`GeneratedField`)
 
