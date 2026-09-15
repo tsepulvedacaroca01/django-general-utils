@@ -144,8 +144,8 @@ class PostgresSearchV2:
         word_similarities = {}
 
         for _search_field in search_fields:
-            for _search in search.split(' '):
-                _search_key = re.sub(r'[^\w\s]', '', _search).strip()
+            for _search in re.split(r'\s+', search.strip()):
+                _search_key = re.sub(r'[^0-9A-Za-z_]', '', _search)
 
                 if not _search or not _search_key:
                     continue
