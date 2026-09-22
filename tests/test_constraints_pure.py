@@ -173,33 +173,59 @@ class CheckModelRelationConstraintTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             constraint.validate(model=None, instance=deleted_instance)
 
-    def test_skips_validation_when_exclude_is_non_empty(self):
+    def test_validates_normally_when_exclude_is_non_empty_but_fields_not_declared(self):
+        # `fields=` is opt-in (default `()`). Django's own ModelForm._post_clean() populates
+        # `exclude` with EVERY model field absent from the form's Meta.fields — every
+        # framework-managed field (id, uuid, created_by, ...) on practically every ModelForm save,
+        # not just when something actually failed validation. Without a declared `fields=`, this
+        # constraint has no way to know whether `exclude` is relevant to it, so it must keep
+        # validating — treating any non-empty `exclude` as "skip" would silently disable the
+        # constraint on nearly every real save() (this was an earlier, wrong version of this fix,
+        # caught by a regression test in a consumer project: AcademicTermForm's date-range check
+        # stopped firing because BaseV3's own framework fields were always in `exclude`).
+        constraint = CheckModelRelationConstraint(name='c', check=lambda instance: True)
+
+        with self.assertRaises(ValidationError):
+            constraint.validate(model=None, instance=_FakeInstance(), exclude=['id', 'uuid', 'created_by'])
+
+    def test_skips_validation_when_a_declared_field_is_excluded(self):
         # Regression: `exclude` was accepted in the signature but never read in the body — the
-        # check ran unconditionally even when Model.full_clean() had already excluded a field
-        # (e.g. a DecimalField that failed its own Field.clean()), leaving that field uncoerced
-        # (raw string/model default, not a proper Python value) on `instance`. A check_func that
-        # compares that field crashed with TypeError/AttributeError instead of the real field
-        # error surfacing normally. `check=lambda instance: True` would normally raise
-        # ValidationError — proves the check never runs when a field is excluded.
+        # check ran unconditionally even when Model.full_clean() had already excluded a field this
+        # check reads (e.g. a DecimalField that failed its own Field.clean()), leaving that field
+        # uncoerced (raw string/model default, not a proper Python value) on `instance`. A
+        # check_func comparing that field crashed with TypeError/AttributeError instead of the
+        # real field error surfacing normally. Declaring `fields=` opts a constraint into the
+        # precise skip — mirrors Django's own UniqueConstraint/CheckConstraint intersecting
+        # `exclude` against their own known fields.
         calls = []
 
         def check(instance):
             calls.append(instance)
             return True
 
-        constraint = CheckModelRelationConstraint(name='c', check=check)
+        constraint = CheckModelRelationConstraint(name='c', check=check, fields=['pass_percentage', 'min_grade'])
 
-        self.assertIsNone(constraint.validate(model=None, instance=_FakeInstance(), exclude=['some_field']))
+        self.assertIsNone(
+            constraint.validate(model=None, instance=_FakeInstance(), exclude=['pass_percentage']),
+        )
         self.assertEqual(calls, [])
 
+    def test_validates_normally_when_excluded_field_is_not_among_declared_fields(self):
+        # The intersection must be precise — excluding an unrelated field must not skip a
+        # constraint that declared different fields.
+        constraint = CheckModelRelationConstraint(name='c', check=lambda instance: True, fields=['pass_percentage'])
+
+        with self.assertRaises(ValidationError):
+            constraint.validate(model=None, instance=_FakeInstance(), exclude=['some_other_field'])
+
     def test_validates_normally_when_exclude_is_none(self):
-        constraint = CheckModelRelationConstraint(name='c', check=lambda instance: True)
+        constraint = CheckModelRelationConstraint(name='c', check=lambda instance: True, fields=['pass_percentage'])
 
         with self.assertRaises(ValidationError):
             constraint.validate(model=None, instance=_FakeInstance(), exclude=None)
 
     def test_validates_normally_when_exclude_is_empty(self):
-        constraint = CheckModelRelationConstraint(name='c', check=lambda instance: True)
+        constraint = CheckModelRelationConstraint(name='c', check=lambda instance: True, fields=['pass_percentage'])
 
         with self.assertRaises(ValidationError):
             constraint.validate(model=None, instance=_FakeInstance(), exclude=[])

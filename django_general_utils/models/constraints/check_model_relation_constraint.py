@@ -13,7 +13,8 @@ class CheckModelRelationConstraint(BaseConstraint):
             validate_on_create=True,
             validate_on_update=True,
             validate_on_delete=False,
-            violation_error_message=None
+            violation_error_message=None,
+            fields=None,
     ):
         # Stored as `check_func`, not `check` — `check` is a method name reserved by
         # `django.db.models.BaseConstraint.check(model, connection)` (Django's own system
@@ -26,6 +27,9 @@ class CheckModelRelationConstraint(BaseConstraint):
         self.validate_on_create = validate_on_create
         self.validate_on_update = validate_on_update
         self.validate_on_delete = validate_on_delete
+        # Optional, opt-in — see validate() for why `fields=None` (the default, and every caller
+        # before this parameter existed) means "never skip on `exclude`" rather than "always skip".
+        self.fields = tuple(fields) if fields else ()
 
         super().__init__(name=name, violation_error_message=violation_error_message)
 
@@ -68,18 +72,20 @@ class CheckModelRelationConstraint(BaseConstraint):
             return None
 
         # `check_func` is an opaque callable — unlike Django's own constraints (UniqueConstraint/
-        # CheckConstraint), it never declares which fields it reads, so we can't intersect `exclude`
-        # against a known field list the way Django does. When Model.full_clean() has already
-        # excluded a field because it failed its own Field.clean() (wrong decimal_places, bad
-        # choice, etc.), that field is left uncoerced on `instance` (still the raw/default value,
-        # not run through to_python()) — running `check_func` against it risks a TypeError/
-        # AttributeError from comparing/operating on a value of the wrong type, masking the real
-        # field error with an unrelated 500. Skipping whenever `exclude` is non-empty is the
-        # conservative equivalent of Django's own "ignore constraints with excluded fields": the
-        # overall save() is already going to fail from the excluded field's own error, so skipping
-        # this constraint doesn't let bad data through — it just avoids validating business rules
-        # against a partially-invalid instance.
-        if exclude:
+        # CheckConstraint), it doesn't declare which fields it reads unless the caller opts in via
+        # `fields=`. `exclude` is populated by Model.full_clean()/ModelForm._post_clean() with
+        # EVERY model field not present in the form's `Meta.fields` (id, uuid, created_by, and
+        # every other framework-managed BaseV3 field) — it is non-empty on essentially every
+        # ModelForm save, not just when something actually failed validation. Treating any
+        # non-empty `exclude` as "skip" would disable this constraint on nearly every real usage
+        # (confirmed against this repo's consumers: it broke a passing end_date/start_date
+        # regression test in materIA-assistant). Only skip when `fields` was declared AND at least
+        # one of those specific fields is in `exclude` — mirrors exactly what Django's own
+        # UniqueConstraint/CheckConstraint do via `_expression_refs_exclude`. Without `fields`
+        # (the default, and every caller that predates this parameter), keep the original
+        # behavior of always running the check — safe because that was the correct, exercised
+        # behavior for every constraint in every consumer project until now.
+        if self.fields and exclude and any(field in exclude for field in self.fields):
             return None
 
         check_result = self.check_func(instance)
@@ -100,6 +106,7 @@ class CheckModelRelationConstraint(BaseConstraint):
                     and self.validate_on_update == other.validate_on_update
                     and self.validate_on_delete == other.validate_on_delete
                     and self.violation_error_message == other.violation_error_message
+                    and self.fields == other.fields
             )
         return super().__eq__(other)
 
@@ -111,6 +118,7 @@ class CheckModelRelationConstraint(BaseConstraint):
             'validate_on_create': self.validate_on_create,
             'validate_on_update': self.validate_on_update,
             'validate_on_delete': self.validate_on_delete,
+            'fields': self.fields,
         })
 
         return path, args, kwargs
