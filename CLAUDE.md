@@ -379,6 +379,48 @@ la versión resuelta actual). `tests/test_constraints_pure.py::CheckModelRelatio
 cubre el fix con tests puros (verifica el valor de retorno de cada hook), que sí corren en cualquier
 versión de Django del rango soportado.
 
+## `CheckModelRelationConstraint.validate()` — ahora respeta `exclude`
+
+`validate(self, model, instance, exclude=None, using=DEFAULT_DB_ALIAS)` aceptaba `exclude` en la
+firma (Django se lo pasa siempre desde `Model.full_clean()` → `validate_constraints(exclude=exclude)`)
+pero nunca lo leía en el cuerpo — `check_func(instance)` corría siempre, sin importar si algún
+campo que ese callable lee ya estaba excluido.
+
+**Cuándo importa** (consumidor real: materIA-assistant, `RubricAssignmentForm`): un `ModelForm` con
+un `DecimalField` que falla su propia validación de campo (ej. más `decimal_places` de los
+permitidos) hace que Django excluya ese campo de `full_clean()` en la instancia — pero
+`clean_fields()` nunca llega a coercionarlo, así que el campo queda con su valor **sin
+convertir** (el default declarado en el modelo, tal cual como Python lo recibió — un `str`, no un
+`Decimal`). `validate_constraints()` llama igual a `CheckModelRelationConstraint.validate()`, que
+ignoraba `exclude` y ejecutaba el check de todos modos — si el check compara ese campo
+(`0 < instance.pass_percentage <= 100`), revienta con `TypeError: '<' not supported between
+instances of 'int' and 'str'` en vez de mostrar el error de validación real del campo. 500 crudo
+donde debería haber un mensaje de formulario.
+
+**Por qué no se intersecta contra los campos del check, como hacen `UniqueConstraint`/
+`CheckConstraint` de Django** — esos constraints nativos declaran sus campos/expresiones de
+antemano y comparan contra `exclude` con precisión (`_expression_refs_exclude`). `check_func` acá
+es un callable totalmente opaco — puede leer cualquier atributo de `instance`, sin declarar cuáles
+— así que no hay forma de saber si un `exclude` puntual es o no relevante para este check en
+particular.
+
+**Fix:** saltar la validación completa cuando `exclude` es no vacío — equivalente conservador de
+"ignorar constraints con campos excluidos". No deja pasar datos inválidos: si otro campo ya falló
+su propia validación, el `save()`/`is_valid()` completo ya iba a fallar igual; saltarse este
+constraint puntual solo evita correr una regla de negocio contra una instancia parcialmente sin
+coercionar. El usuario ve el error de ese otro campo primero, y el de este constraint (si aplica)
+en el siguiente submit, una vez que el campo excluido ya es válido — mismo patrón UX que Django
+usa para sus propios constraints cuando SÍ hay intersección real.
+
+`tests/test_constraints_pure.py::CheckModelRelationConstraintTests::
+test_skips_validation_when_exclude_is_non_empty` prueba con un spy que `check_func` ni siquiera se
+llama cuando `exclude` trae cualquier campo — `test_validates_normally_when_exclude_is_none`/
+`test_validates_normally_when_exclude_is_empty` confirman que el comportamiento previo (validar
+normal) se mantiene intacto cuando no hay nada excluido.
+
+**Para cualquier proyecto consumidor:** como con el fix de `create_sql()` de arriba, este cambio
+vive en el commit que lo introduce — actualizar el pin de `uv.lock` (`rev`/commit) para recibirlo.
+
 ## Bugs conocidos — documentar con tests, no arreglar sin que se pida
 
 Estos ya están confirmados leyendo el código fuente (no son sospechas). Si el usuario pide "agregar tests"

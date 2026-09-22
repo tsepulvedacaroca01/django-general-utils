@@ -67,6 +67,21 @@ class CheckModelRelationConstraint(BaseConstraint):
         if not self.validate_on_update and not instance._state.adding:
             return None
 
+        # `check_func` is an opaque callable — unlike Django's own constraints (UniqueConstraint/
+        # CheckConstraint), it never declares which fields it reads, so we can't intersect `exclude`
+        # against a known field list the way Django does. When Model.full_clean() has already
+        # excluded a field because it failed its own Field.clean() (wrong decimal_places, bad
+        # choice, etc.), that field is left uncoerced on `instance` (still the raw/default value,
+        # not run through to_python()) — running `check_func` against it risks a TypeError/
+        # AttributeError from comparing/operating on a value of the wrong type, masking the real
+        # field error with an unrelated 500. Skipping whenever `exclude` is non-empty is the
+        # conservative equivalent of Django's own "ignore constraints with excluded fields": the
+        # overall save() is already going to fail from the excluded field's own error, so skipping
+        # this constraint doesn't let bad data through — it just avoids validating business rules
+        # against a partially-invalid instance.
+        if exclude:
+            return None
+
         check_result = self.check_func(instance)
 
         if isinstance(check_result, (str, dict)):

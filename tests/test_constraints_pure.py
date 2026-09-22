@@ -173,6 +173,37 @@ class CheckModelRelationConstraintTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             constraint.validate(model=None, instance=deleted_instance)
 
+    def test_skips_validation_when_exclude_is_non_empty(self):
+        # Regression: `exclude` was accepted in the signature but never read in the body — the
+        # check ran unconditionally even when Model.full_clean() had already excluded a field
+        # (e.g. a DecimalField that failed its own Field.clean()), leaving that field uncoerced
+        # (raw string/model default, not a proper Python value) on `instance`. A check_func that
+        # compares that field crashed with TypeError/AttributeError instead of the real field
+        # error surfacing normally. `check=lambda instance: True` would normally raise
+        # ValidationError — proves the check never runs when a field is excluded.
+        calls = []
+
+        def check(instance):
+            calls.append(instance)
+            return True
+
+        constraint = CheckModelRelationConstraint(name='c', check=check)
+
+        self.assertIsNone(constraint.validate(model=None, instance=_FakeInstance(), exclude=['some_field']))
+        self.assertEqual(calls, [])
+
+    def test_validates_normally_when_exclude_is_none(self):
+        constraint = CheckModelRelationConstraint(name='c', check=lambda instance: True)
+
+        with self.assertRaises(ValidationError):
+            constraint.validate(model=None, instance=_FakeInstance(), exclude=None)
+
+    def test_validates_normally_when_exclude_is_empty(self):
+        constraint = CheckModelRelationConstraint(name='c', check=lambda instance: True)
+
+        with self.assertRaises(ValidationError):
+            constraint.validate(model=None, instance=_FakeInstance(), exclude=[])
+
     def test_does_not_shadow_base_constraint_system_check(self):
         # Regression test: `django.db.models.BaseConstraint.check(model, connection)` is
         # Django's own system-check hook (present on Django >=5.1; this project supports
