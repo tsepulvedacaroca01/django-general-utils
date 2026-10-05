@@ -4,9 +4,10 @@ from rest_framework import serializers
 from rest_framework.serializers import LIST_SERIALIZER_KWARGS, LIST_SERIALIZER_KWARGS_REMOVE
 
 from ....utils.rest_ql import DynamicFieldsMixin
+from .child_serializer_cache import CachedChildSerializerMixin
 
 
-class LazyRefSerializerField(DynamicFieldsMixin, serializers.BaseSerializer):
+class LazyRefSerializerField(CachedChildSerializerMixin, DynamicFieldsMixin, serializers.BaseSerializer):
     def __init__(self, **kwargs):
         self.serializer_class = kwargs.pop('serializer_class', None)
         self.extra_kwargs = kwargs.pop('extra_kwargs', {})
@@ -105,4 +106,4 @@ class LazyRefSerializerField(DynamicFieldsMixin, serializers.BaseSerializer):
             pk_name = model._meta.pk.name
             instance = model.objects.get(**{pk_name: instance})
 
-        return self.get_serializer().to_representation(instance)
+        return self.get_cached_serializer().to_representation(instance)

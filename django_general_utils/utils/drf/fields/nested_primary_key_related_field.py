@@ -6,6 +6,7 @@ from rest_framework import serializers
 from typing import Type
 
 from ....utils.rest_ql import DynamicFieldsMixin
+from .child_serializer_cache import CachedChildSerializerMixin
 
 
 class PrimaryKeyRelatedField(serializers.PrimaryKeyRelatedField):
@@ -36,7 +37,7 @@ class PrimaryKeyRelatedField(serializers.PrimaryKeyRelatedField):
             self.fail('incorrect_type', data_type=type(data).__name__)
 
 
-class NestedPrimaryKeyRelatedField(DynamicFieldsMixin, PrimaryKeyRelatedField):
+class NestedPrimaryKeyRelatedField(CachedChildSerializerMixin, DynamicFieldsMixin, PrimaryKeyRelatedField):
     def __init__(self, **kwargs):
         """
         On read display a complete nested representation of the object(s)
@@ -90,7 +91,7 @@ class NestedPrimaryKeyRelatedField(DynamicFieldsMixin, PrimaryKeyRelatedField):
         return False
 
     def to_representation(self, instance) -> dict:
-        return self.get_serializer(instance=instance).data
+        return self.get_cached_serializer().to_representation(instance)
 
     def get_choices(self, cutoff=None):
         queryset = self.get_queryset()
